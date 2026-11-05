@@ -1,4 +1,3 @@
-
 name: Bitcoin Prediction Bot
 
 on:
@@ -8,10 +7,6 @@ on:
 
 permissions:
   contents: write
-
-concurrency:
-  group: bitcoin-prediction-bot
-  cancel-in-progress: false
 
 jobs:
   run-bot:
