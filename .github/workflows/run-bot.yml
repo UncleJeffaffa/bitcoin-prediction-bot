@@ -1,3 +1,4 @@
+
 name: Bitcoin Prediction Bot
 
 on:
@@ -15,11 +16,17 @@ jobs:
     steps:
       - name: Get bot code
         uses: actions/checkout@v4
+        with:
+          ref: main
 
       - name: Set up Python
         uses: actions/setup-python@v5
         with:
           python-version: "3.12"
+
+      - name: Install dependencies
+        run: |
+          pip install pandas requests
 
       - name: Run Bitcoin prediction
         run: python main.py
@@ -29,13 +36,5 @@ jobs:
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git add predictions.csv
-          git commit -m "Update prediction history" || echo "No changes to commit"
-          git push
-
-      - name: Save prediction history
-        run: |
-          git config user.name "github-actions[bot]"
-          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add predictions.csv
           git diff --cached --quiet || git commit -m "Update Bitcoin prediction history"
-          git push
+          git push origin HEAD:main
