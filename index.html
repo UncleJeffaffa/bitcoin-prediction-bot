@@ -1,0 +1,173 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Bitcoin 15-Minute Prediction Dashboard</title>
+<style>
+*{box-sizing:border-box}
+body{margin:0;padding:18px;background:#0b1020;color:#eef2ff;font-family:Arial,sans-serif}
+main{max-width:760px;margin:auto}
+h1{font-size:25px;margin-bottom:5px}
+.sub{color:#9aa8c7;font-size:13px;margin-bottom:22px}
+.card{background:#151e33;border:1px solid #293653;border-radius:15px;padding:17px;margin:12px 0}
+.label{color:#9aa8c7;font-size:12px;text-transform:uppercase;letter-spacing:1px}
+.price{font-size:32px;font-weight:bold;margin-top:8px}
+.signal{font-size:36px;font-weight:bold;margin:8px 0}
+.up{color:#39d98a}.down{color:#ff7272}.muted{color:#9aa8c7}
+.grid{display:grid;grid-template-columns:1fr 1fr;gap:10px}
+.stat{background:#202c45;padding:13px;border-radius:10px}
+.stat strong{display:block;font-size:23px;margin-top:6px}
+table{width:100%;border-collapse:collapse;font-size:12px}
+th,td{text-align:left;padding:10px 5px;border-bottom:1px solid #293653}
+th{color:#9aa8c7}
+.tablewrap{overflow-x:auto}
+.small{font-size:12px;color:#9aa8c7;line-height:1.5}
+button{background:#34466b;color:white;border:0;border-radius:8px;padding:10px 14px;font-size:14px}
+</style>
+</head>
+<body>
+<main>
+<h1>₿ Bitcoin Prediction Dashboard</h1>
+<div class="sub">15-minute directional predictions · Paper tracking only</div>
+
+<div class="card">
+ <div class="label">Live BTC/USD price · Coinbase</div>
+ <div class="price" id="btcPrice">Loading...</div>
+ <div class="small" id="priceUpdated">Waiting for price update</div>
+</div>
+
+<div class="card">
+ <div class="label">Latest bot prediction</div>
+ <div class="signal muted" id="signal">Loading...</div>
+ <div class="grid">
+  <div class="stat"><span class="label">UP probability</span><strong id="up">—</strong></div>
+  <div class="stat"><span class="label">DOWN probability</span><strong id="down">—</strong></div>
+  <div class="stat"><span class="label">Starting BTC price</span><strong id="starting">—</strong></div>
+  <div class="stat"><span class="label">Target time</span><strong id="target">—</strong></div>
+ </div>
+ <p class="small" id="predictionTime">Waiting for prediction data</p>
+</div>
+
+<div class="card">
+ <div class="label">Prediction performance</div>
+ <div class="grid" style="margin-top:12px">
+  <div class="stat"><span class="label">Win rate</span><strong id="accuracy">—</strong></div>
+  <div class="stat"><span class="label">Correct</span><strong id="correct">—</strong></div>
+  <div class="stat"><span class="label">Incorrect</span><strong id="incorrect">—</strong></div>
+  <div class="stat"><span class="label">Pending</span><strong id="pending">—</strong></div>
+ </div>
+ <p class="small" id="total">Total predictions: —</p>
+</div>
+
+<div class="card">
+ <div style="display:flex;justify-content:space-between;align-items:center;gap:10px">
+  <div class="label">Recent prediction history</div>
+  <button onclick="loadCSV()">Refresh</button>
+ </div>
+ <div class="tablewrap">
+ <table>
+ <thead><tr><th>Time</th><th>Signal</th><th>UP %</th><th>Result</th></tr></thead>
+ <tbody id="history"><tr><td colspan="4">Loading...</td></tr></tbody>
+ </table>
+ </div>
+</div>
+
+<p class="small">Data refreshes automatically. BTC price comes from Coinbase, while predictions and results come from this GitHub bot. This dashboard does not place trades. A correct directional prediction does not automatically mean a profitable Polymarket trade.</p>
+<p class="small" id="status">Connecting...</p>
+</main>
+
+<script>
+const CSV_URL="https://raw.githubusercontent.com/UncleJeffaffa/bitcoin-prediction-bot/main/predictions.csv";
+const PRICE_URL="https://api.exchange.coinbase.com/products/BTC-USD/ticker";
+
+function parseCSV(text){
+ const lines=text.trim().split(/\r?\n/);
+ if(lines.length<2)return [];
+ const headers=lines[0].split(",");
+ return lines.slice(1).filter(x=>x.trim()).map(line=>{
+  const values=[];let current="",quoted=false;
+  for(let i=0;i<line.length;i++){
+   const c=line[i];
+   if(c==='"'){
+    if(quoted&&line[i+1]==='"'){current+='"';i++}
+    else quoted=!quoted;
+   }else if(c===","&&!quoted){values.push(current);current=""}
+   else current+=c;
+  }
+  values.push(current);
+  const obj={};
+  headers.forEach((h,i)=>obj[h.trim()]=(values[i]||"").trim());
+  return obj;
+ });
+}
+
+function fmtPrice(n){
+ const v=Number(n);
+ return Number.isFinite(v)?"$"+v.toLocaleString("en-US",{minimumFractionDigits:2,maximumFractionDigits:2}):"—";
+}
+function fmtTime(s){
+ if(!s)return "—";
+ const d=new Date(s);
+ return isNaN(d)?"—":d.toLocaleString();
+}
+function pct(s){
+ const n=Number(s);
+ return Number.isFinite(n)?(n*100).toFixed(1)+"%":"—";
+}
+function show(id,value){document.getElementById(id).textContent=value}
+
+async function loadPrice(){
+ try{
+  const r=await fetch(PRICE_URL,{cache:"no-store"});
+  if(!r.ok)throw Error("Price request failed");
+  const d=await r.json();
+  show("btcPrice",fmtPrice(d.price));
+  show("priceUpdated","Updated "+new Date().toLocaleTimeString());
+ }catch(e){show("btcPrice","Unavailable")}
+}
+
+async function loadCSV(){
+ try{
+  const r=await fetch(CSV_URL+"?t="+Date.now(),{cache:"no-store"});
+  if(!r.ok)throw Error("Could not read predictions.csv");
+  const rows=parseCSV(await r.text());
+  if(!rows.length)throw Error("No prediction rows found yet");
+
+  const latest=rows[rows.length-1];
+  const direction=(latest.prediction||"").toUpperCase();
+  show("signal",direction||"—");
+  document.getElementById("signal").className="signal "+(direction==="UP"?"up":direction==="DOWN"?"down":"muted");
+  show("up",pct(latest.up_probability));
+  show("down",pct(latest.down_probability));
+  show("starting",fmtPrice(latest.starting_price));
+  show("target",fmtTime(latest.target_at));
+  show("predictionTime","Created: "+fmtTime(latest.created_at));
+
+  const settled=rows.filter(x=>x.correct==="True"||x.correct==="False"||x.correct==="true"||x.correct==="false");
+  const correct=settled.filter(x=>x.correct.toLowerCase()==="true").length;
+  const incorrect=settled.length-correct;
+  const pending=rows.length-settled.length;
+  show("accuracy",settled.length?(100*correct/settled.length).toFixed(1)+"%":"—");
+  show("correct",correct);
+  show("incorrect",incorrect);
+  show("pending",pending);
+  show("total","Total predictions: "+rows.length+" · Settled: "+settled.length);
+
+  const recent=rows.slice().reverse().slice(0,20);
+  document.getElementById("history").innerHTML=recent.map(x=>{
+   const result=x.correct==="True"||x.correct==="true"?"Correct":x.correct==="False"||x.correct==="false"?"Incorrect":"Pending";
+   const dir=(x.prediction||"").toUpperCase();
+   return `<tr><td>${fmtTime(x.created_at)}</td><td class="${dir==="UP"?"up":"down"}">${dir}</td><td>${pct(x.up_probability)}</td><td>${result}</td></tr>`;
+  }).join("");
+  show("status","Prediction data updated "+new Date().toLocaleTimeString());
+ }catch(e){show("status","Dashboard error: "+e.message)}
+}
+
+loadCSV();
+loadPrice();
+setInterval(loadCSV,60000);
+setInterval(loadPrice,30000);
+</script>
+</body>
+</html>
