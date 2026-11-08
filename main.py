@@ -1,7 +1,9 @@
+
 import csv
 import json
 import math
 import os
+import statistics
 import urllib.request
 from datetime import datetime, timezone, timedelta
 
@@ -13,7 +15,7 @@ PRODUCT = "BTC-USD"
 def get_json(url):
     request = urllib.request.Request(
         url,
-        headers={"User-Agent": "BitcoinPredictionBot/1.0"}
+        headers={"User-Agent": "BitcoinPredictionBot/2.0"}
     )
     with urllib.request.urlopen(request, timeout=20) as response:
         return json.loads(response.read().decode())
@@ -23,15 +25,26 @@ def get_market_data():
     ticker = get_json(
         f"{BASE_URL}/products/{PRODUCT}/ticker"
     )
+
     candles = get_json(
         f"{BASE_URL}/products/{PRODUCT}/candles?granularity=60"
     )
+
     candles = sorted(candles, key=lambda x: x[0])
 
-    if len(candles) < 40:
-        raise RuntimeError("Not enough Bitcoin data")
+    now = datetime.now(timezone.utc).timestamp()
+
+    # Remove unfinished candles
+    candles = [
+        c for c in candles
+        if c[0] + 60 <= now
+    ]
+
+    if len(candles) < 100:
+        raise RuntimeError("Not enough completed Bitcoin candles")
 
     prices = [float(c[4]) for c in candles]
+
     return float(ticker["price"]), candles, prices
 
 
@@ -52,22 +65,38 @@ def calculate_rsi(prices, period=14):
     ]
 
     recent = changes[-period:]
-    gains = [max(x, 0) for x in recent]
-    losses = [abs(min(x, 0)) for x in recent]
+
+    gains = [max(change, 0) for change in recent]
+    losses = [abs(min(change, 0)) for change in recent]
 
     avg_gain = sum(gains) / period
     avg_loss = sum(losses) / period
 
     if avg_loss == 0:
-        return 100.0
+        return 100.0 if avg_gain > 0 else 50.0
 
     rs = avg_gain / avg_loss
+
     return 100 - (100 / (1 + rs))
 
 
 def momentum(prices, minutes):
+    if len(prices) <= minutes:
+        return 0.0
+
     old_price = prices[-(minutes + 1)]
-    return ((prices[-1] - old_price) / old_price) * 100
+    new_price = prices[-1]
+
+    return ((new_price - old_price) / old_price) * 100
+
+
+def calculate_volatility(prices, period=30):
+    changes = [
+        (prices[i] - prices[i - 1]) / prices[i - 1] * 100
+        for i in range(len(prices) - period, len(prices))
+    ]
+
+    return statistics.pstdev(changes)
 
 
 def load_history():
@@ -80,10 +109,17 @@ def load_history():
 
 def save_history(records):
     fields = [
-        "prediction_id", "created_at", "starting_price",
-        "prediction", "up_probability", "down_probability",
-        "target_at", "outcome_price", "outcome",
-        "correct", "evaluated_at"
+        "prediction_id",
+        "created_at",
+        "starting_price",
+        "prediction",
+        "up_probability",
+        "down_probability",
+        "target_at",
+        "outcome_price",
+        "outcome",
+        "correct",
+        "evaluated_at"
     ]
 
     with open(HISTORY_FILE, "w", newline="") as file:
@@ -113,6 +149,7 @@ def evaluate_predictions(records, candles, now):
             continue
 
         candle = min(eligible, key=lambda c: c[0])
+
         outcome_price = float(candle[4])
         starting_price = float(record["starting_price"])
 
@@ -144,7 +181,11 @@ def show_accuracy(records):
         if r["correct"] in ("True", "False")
     ]
 
-    correct = sum(r["correct"] == "True" for r in completed)
+    correct = sum(
+        r["correct"] == "True"
+        for r in completed
+    )
+
     total = len(completed)
 
     print("\nPREDICTION ACCURACY")
@@ -164,37 +205,58 @@ def make_prediction(price, prices):
     mom5 = momentum(prices, 5)
     mom15 = momentum(prices, 15)
     mom30 = momentum(prices, 30)
+    mom60 = momentum(prices, 60)
 
     ema9 = calculate_ema(prices[-100:], 9)
     ema21 = calculate_ema(prices[-100:], 21)
+    ema50 = calculate_ema(prices[-150:], 50)
+
+    volatility = calculate_volatility(prices)
 
     ema_difference = ((ema9 - ema21) / price) * 100
+    long_trend = ((ema21 - ema50) / price) * 100
 
+    # Normalize market indicators
     score = (
-        0.20 * (mom5 / 0.20)
-        + 0.25 * (mom15 / 0.30)
-        + 0.20 * (mom30 / 0.40)
-        + 0.25 * (ema_difference / 0.15)
-        + 0.10 * ((rsi - 50) / 10)
+        0.15 * math.tanh(mom5 / 0.10)
+        + 0.20 * math.tanh(mom15 / 0.20)
+        + 0.15 * math.tanh(mom30 / 0.30)
+        + 0.10 * math.tanh(mom60 / 0.40)
+        + 0.20 * math.tanh(ema_difference / 0.12)
+        + 0.10 * math.tanh(long_trend / 0.20)
+        + 0.10 * math.tanh((rsi - 50) / 12)
     )
 
+    # Reduce confidence when market volatility is unusually high
+    volatility_factor = 1 / (1 + volatility * 5)
+
+    adjusted_score = score * volatility_factor
+
     up_probability = round(
-        50 + 30 * math.tanh(score / 2), 1
+        50 + 30 * math.tanh(adjusted_score * 2),
+        1
     )
 
     down_probability = round(100 - up_probability, 1)
 
+    prediction = (
+        "UP" if up_probability >= 50 else "DOWN"
+    )
+
     return {
         "price": round(price, 2),
-        "prediction": "UP" if up_probability >= 50 else "DOWN",
+        "prediction": prediction,
         "up_probability": up_probability,
         "down_probability": down_probability,
         "rsi": round(rsi, 2),
         "momentum_5m": round(mom5, 4),
         "momentum_15m": round(mom15, 4),
         "momentum_30m": round(mom30, 4),
+        "momentum_60m": round(mom60, 4),
         "ema_9": round(ema9, 2),
-        "ema_21": round(ema21, 2)
+        "ema_21": round(ema21, 2),
+        "ema_50": round(ema50, 2),
+        "volatility": round(volatility, 5)
     }
 
 
@@ -202,16 +264,19 @@ def main():
     now = datetime.now(timezone.utc)
 
     print("=" * 45)
-    print("BITCOIN 15-MINUTE PREDICTION BOT")
+    print("BITCOIN 15-MINUTE PREDICTION BOT V2")
     print("=" * 45)
 
     print("\nTIME (UTC):")
     print(now.isoformat())
 
     price, candles, prices = get_market_data()
+
     records = load_history()
 
-    evaluated = evaluate_predictions(records, candles, now)
+    evaluated = evaluate_predictions(
+        records, candles, now
+    )
 
     result = make_prediction(price, prices)
 
@@ -239,17 +304,24 @@ def main():
     print("\n15-MINUTE PREDICTION:")
     print(result["prediction"])
 
-    print("\nESTIMATED PROBABILITIES:")
+    print("\nESTIMATED DIRECTIONAL SCORES:")
     print(f"UP: {result['up_probability']}%")
     print(f"DOWN: {result['down_probability']}%")
 
     print("\nTECHNICAL INDICATORS:")
-    print(f"RSI: {result['rsi']}")
-    print(f"5-minute momentum: {result['momentum_5m']}%")
-    print(f"15-minute momentum: {result['momentum_15m']}%")
-    print(f"30-minute momentum: {result['momentum_30m']}%")
-    print(f"EMA 9: ${result['ema_9']:,.2f}")
-    print(f"EMA 21: ${result['ema_21']:,.2f}")
+
+    for key in [
+        "rsi",
+        "momentum_5m",
+        "momentum_15m",
+        "momentum_30m",
+        "momentum_60m",
+        "ema_9",
+        "ema_21",
+        "ema_50",
+        "volatility"
+    ]:
+        print(f"{key}: {result[key]}")
 
     print("\nNEW PREDICTION SAVED")
     print(f"Target time: {target_time.isoformat()}")
@@ -257,9 +329,6 @@ def main():
     print(f"\nPreviously evaluated: {evaluated}")
 
     show_accuracy(records)
-
-    print("\nFULL RESULTS:")
-    print(json.dumps(result, indent=4))
 
     print("\nPREDICTION COMPLETE")
 
