@@ -1,0 +1,124 @@
+{
+  "product": "BTC-USD",
+  "requested_historical_days": 30,
+  "actual_historical_days": 30.0,
+  "training_days": 7,
+  "testing_days": 23.0,
+  "horizon_minutes": 15,
+  "signal_schedule_utc": [
+    ":07",
+    ":22",
+    ":37",
+    ":52"
+  ],
+  "entry_method": "Open of the one-minute candle at scheduled signal time",
+  "exit_method": "Open of the candle exactly 15 minutes after entry",
+  "actual_candles": 43198,
+  "synthetic_candles": 2,
+  "synthetic_policy": "Only small gaps are filled using previous close and zero volume. Signals using synthetic feature, entry, or exit candles are excluded.",
+  "training_signals": 661,
+  "testing_signals": 2197,
+  "thresholds": {
+    "current": 0.0,
+    "contrarian": 0.0,
+    "trend": 0.2,
+    "momentum": 0.7,
+    "mean_reversion": 0.6,
+    "breakout": 0.0,
+    "volume_breakout": 0.05,
+    "combined": 0.5
+  },
+  "results": [
+    {
+      "strategy": "current",
+      "predictions": 2197,
+      "wins": 1045,
+      "losses": 1152,
+      "accuracy_percent": 47.56,
+      "confidence_interval_low": 45.48,
+      "confidence_interval_high": 49.66,
+      "training_threshold": 0.0
+    },
+    {
+      "strategy": "contrarian",
+      "predictions": 2197,
+      "wins": 1152,
+      "losses": 1045,
+      "accuracy_percent": 52.44,
+      "confidence_interval_low": 50.34,
+      "confidence_interval_high": 54.52,
+      "training_threshold": 0.0
+    },
+    {
+      "strategy": "trend",
+      "predictions": 1023,
+      "wins": 468,
+      "losses": 555,
+      "accuracy_percent": 45.75,
+      "confidence_interval_low": 42.72,
+      "confidence_interval_high": 48.81,
+      "training_threshold": 0.2
+    },
+    {
+      "strategy": "momentum",
+      "predictions": 330,
+      "wins": 142,
+      "losses": 188,
+      "accuracy_percent": 43.03,
+      "confidence_interval_low": 37.8,
+      "confidence_interval_high": 48.42,
+      "training_threshold": 0.7
+    },
+    {
+      "strategy": "mean_reversion",
+      "predictions": 1175,
+      "wins": 638,
+      "losses": 537,
+      "accuracy_percent": 54.3,
+      "confidence_interval_low": 51.44,
+      "confidence_interval_high": 57.13,
+      "training_threshold": 0.6
+    },
+    {
+      "strategy": "breakout",
+      "predictions": 218,
+      "wins": 98,
+      "losses": 120,
+      "accuracy_percent": 44.95,
+      "confidence_interval_low": 38.49,
+      "confidence_interval_high": 51.59,
+      "training_threshold": 0.0
+    },
+    {
+      "strategy": "volume_breakout",
+      "predictions": 211,
+      "wins": 97,
+      "losses": 114,
+      "accuracy_percent": 45.97,
+      "confidence_interval_low": 39.38,
+      "confidence_interval_high": 52.71,
+      "training_threshold": 0.05
+    },
+    {
+      "strategy": "combined",
+      "predictions": 239,
+      "wins": 107,
+      "losses": 132,
+      "accuracy_percent": 44.77,
+      "confidence_interval_low": 38.6,
+      "confidence_interval_high": 51.11,
+      "training_threshold": 0.5
+    }
+  ],
+  "highest_test_accuracy_candidate": {
+    "strategy": "mean_reversion",
+    "predictions": 1175,
+    "wins": 638,
+    "losses": 537,
+    "accuracy_percent": 54.3,
+    "confidence_interval_low": 51.44,
+    "confidence_interval_high": 57.13,
+    "training_threshold": 0.6
+  },
+  "warning": "The test period is separate from the training period. However, choosing a strategy after inspecting test results can still lead to overfitting across repeated experiments. Confirm a candidate on a new later holdout period before using it for live trading. Accuracy does not guarantee profit."
+}
