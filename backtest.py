@@ -32,7 +32,7 @@ def rsi(values, period=14):
     avg_gain = sum(gains) / period
     avg_loss = sum(losses) / period
     if avg_loss == 0:
-    return 100.0 if avg_gain > 0 else 50.0
+        return 100.0 if avg_gain > 0 else 50.0
     return 100 - (100 / (1 + avg_gain / avg_loss))
 
 def tanh(x):
