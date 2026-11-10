@@ -1,0 +1,35 @@
+name: Bitcoin Historical Backtest
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  backtest:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Get repository code
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install dependencies
+        run: pip install requests
+
+      - name: Run historical backtest
+        run: python backtest.py
+
+      - name: Save backtest results
+        uses: actions/upload-artifact@v4
+        with:
+          name: bitcoin-backtest-results
+          path: |
+            backtest_results.json
+            backtest_predictions.csv
+          if-no-files-found: error
