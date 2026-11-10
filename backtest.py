@@ -244,8 +244,8 @@ def main():
         signal_time = candles[i]["time"] + 60
 
         # Match a bot scheduled every 15 minutes.
-       if signal_time % 3600 not in (7 * 60, 22 * 60, 37 * 60, 52 * 60):
-    continue
+        if signal_time % 3600 not in (7 * 60, 22 * 60, 37 * 60, 52 * 60):
+            continue
 
         f = features(candles, i)
         if f is None:
