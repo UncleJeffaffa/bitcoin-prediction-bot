@@ -54,13 +54,22 @@ def download_candles():
             "end": batch_end.isoformat()
         }
 
-        response = requests.get(
-            f"{API}/products/{PRODUCT}/candles",
-            params=params,
-            headers=HEADERS,
-            timeout=30
-        )
-        response.raise_for_status()
+                response = None
+
+        for attempt in range(5):
+            try:
+                response = requests.get(
+                    f"{API}/products/{PRODUCT}/candles",
+                    params=params,
+                    headers=HEADERS,
+                    timeout=30
+                )
+                response.raise_for_status()
+                break
+            except requests.RequestException:
+                if attempt == 4:
+                    raise
+                time.sleep(2 ** attempt)
 
         data = response.json()
         rows.extend(data)
@@ -90,7 +99,18 @@ def download_candles():
             f"Only {len(candles)} candles downloaded. "
             "Not enough data for this backtest."
         )
+    gaps = [
+        candles[i]["time"] - candles[i-1]["time"]
+        for i in range(1, len(candles))
+        if candles[i]["time"] - candles[i-1]["time"] != 60
+    ]
 
+    if gaps:
+        raise RuntimeError(
+            f"Historical data has {len(gaps)} missing one-minute intervals. "
+            "Backtest stopped to avoid misleading results."
+        )
+    
     print(f"Downloaded {len(candles)} unique completed candles.")
     return candles
 
