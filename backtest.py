@@ -10,35 +10,35 @@ from datetime import datetime, timedelta, timezone
 from urllib.error import HTTPError, URLError
 
 # ============================================================
-# BTC 15-MINUTE INDEPENDENT HISTORICAL VALIDATION
+# BTC 15-MINUTE WALK-FORWARD BACKTEST
 #
-# Downloads 75 days:
-#   Days 1-15: training and threshold selection
-#   Days 16-45: independent historical holdout test
-#   Days 46-75: deliberately excluded from this test because
-#               they overlap the recent period tested previously.
+# 90 days of one-minute Coinbase BTC-USD candles.
+# First 15 days: initial training period.
+# Remaining history: consecutive 7-day test folds.
 #
-# No third-party packages required.
+# Each fold uses ONLY earlier data to select thresholds.
+# No future data is used to train an earlier prediction.
+#
+# Keeps the same five report filenames used by the workflow.
 # ============================================================
 
 API = "https://api.exchange.coinbase.com"
 PRODUCT = "BTC-USD"
 
-DAYS = 75
-TRAIN_DAYS = 15
-TEST_DAYS = 30
+DAYS = 90
+INITIAL_TRAIN_DAYS = 15
+TEST_FOLD_DAYS = 7
 HORIZON_MINUTES = 15
 
 SIGNAL_MINUTES = (7, 22, 37, 52)
 MAX_FILLED_GAP_MINUTES = 5
 MIN_TRAINING_SIGNALS = 60
-MIN_TEST_SIGNALS = 100
+MIN_TEST_SIGNALS = 30
 
-# These are hypothetical BTC directional costs, not Polymarket fees.
 COSTS_BPS = (0, 5, 10, 25)
 
 HEADERS = {
-    "User-Agent": "BTC-Independent-15m-Validation/6.0"
+    "User-Agent": "BTC-15m-WalkForward-Backtest/1.0"
 }
 
 STRATEGIES = (
@@ -50,6 +50,12 @@ STRATEGIES = (
     "breakout",
     "volume_breakout",
     "combined",
+)
+
+THRESHOLDS = (
+    0.00, 0.05, 0.10, 0.15, 0.20,
+    0.25, 0.30, 0.35, 0.40, 0.45,
+    0.50, 0.60, 0.70, 0.80, 0.90
 )
 
 
@@ -65,77 +71,6 @@ def get_json(url):
             time.sleep(min(2 ** attempt, 20))
 
     raise RuntimeError("Unable to download market data.")
-
-
-def download_candles():
-    end = datetime.now(timezone.utc).replace(second=0, microsecond=0)
-    start = end - timedelta(days=DAYS)
-
-    rows = []
-    cursor = start
-    batches = 0
-
-    print(f"Downloading {DAYS} days of BTC/USD one-minute candles.")
-    print("This can take several minutes.")
-
-    while cursor < end:
-        batch_end = min(cursor + timedelta(minutes=300), end)
-
-        params = urllib.parse.urlencode({
-            "granularity": 60,
-            "start": cursor.isoformat(),
-            "end": batch_end.isoformat()
-        })
-
-        url = f"{API}/products/{PRODUCT}/candles?{params}"
-        rows.extend(get_json(url))
-
-        cursor = batch_end
-        batches += 1
-
-        if batches % 30 == 0:
-            print(f"Downloaded {batches} data batches...")
-
-        time.sleep(0.25)
-
-    unique = {}
-
-    for row in rows:
-        if len(row) < 6:
-            continue
-
-        timestamp = int(row[0])
-        unique[timestamp] = {
-            "time": timestamp,
-            "low": float(row[1]),
-            "high": float(row[2]),
-            "open": float(row[3]),
-            "close": float(row[4]),
-            "volume": float(row[5]),
-            "synthetic": False
-        }
-
-    candles = sorted(unique.values(), key=lambda item: item["time"])
-    cutoff = int(end.timestamp())
-
-    candles = [
-        candle for candle in candles
-        if candle["time"] + 60 <= cutoff
-    ]
-
-    if len(candles) < 50000:
-        raise RuntimeError(
-            f"Only {len(candles)} actual candles downloaded. "
-            "At least 50,000 are required for this test."
-        )
-
-    actual_count = len(candles)
-    candles, synthetic_count = repair_gaps(candles)
-
-    print(f"Actual candles: {actual_count}")
-    print(f"Small gaps filled: {synthetic_count}")
-
-    return candles, actual_count, synthetic_count
 
 
 def repair_gaps(candles):
@@ -159,7 +94,7 @@ def repair_gaps(candles):
 
         if missing > MAX_FILLED_GAP_MINUTES:
             raise RuntimeError(
-                f"Found a {missing}-minute gap. "
+                f"Found a {missing}-minute data gap. "
                 "Stopping rather than inventing market prices."
             )
 
@@ -180,6 +115,76 @@ def repair_gaps(candles):
         repaired.append(current)
 
     return repaired, filled
+
+
+def download_candles():
+    end = datetime.now(timezone.utc).replace(second=0, microsecond=0)
+    start = end - timedelta(days=DAYS)
+
+    rows = []
+    cursor = start
+    batches = 0
+
+    print(f"Downloading {DAYS} days of BTC/USD one-minute candles.")
+    print("This may take several minutes.")
+
+    while cursor < end:
+        batch_end = min(cursor + timedelta(minutes=300), end)
+
+        params = urllib.parse.urlencode({
+            "granularity": 60,
+            "start": cursor.isoformat(),
+            "end": batch_end.isoformat()
+        })
+
+        url = f"{API}/products/{PRODUCT}/candles?{params}"
+        rows.extend(get_json(url))
+
+        cursor = batch_end
+        batches += 1
+
+        if batches % 30 == 0:
+            print(f"Downloaded {batches} batches.")
+
+        time.sleep(0.25)
+
+    unique = {}
+
+    for row in rows:
+        if len(row) < 6:
+            continue
+
+        timestamp = int(row[0])
+        unique[timestamp] = {
+            "time": timestamp,
+            "low": float(row[1]),
+            "high": float(row[2]),
+            "open": float(row[3]),
+            "close": float(row[4]),
+            "volume": float(row[5]),
+            "synthetic": False
+        }
+
+    candles = sorted(unique.values(), key=lambda x: x["time"])
+    cutoff = int(end.timestamp())
+
+    candles = [
+        c for c in candles
+        if c["time"] + 60 <= cutoff
+    ]
+
+    if len(candles) < 50000:
+        raise RuntimeError(
+            f"Only {len(candles)} actual candles downloaded."
+        )
+
+    actual_count = len(candles)
+    candles, synthetic_count = repair_gaps(candles)
+
+    print(f"Actual candles: {actual_count}")
+    print(f"Small gaps filled: {synthetic_count}")
+
+    return candles, actual_count, synthetic_count
 
 
 def ema(values, period):
@@ -204,8 +209,8 @@ def rsi(values, period=14):
         for i in range(len(values) - period, len(values))
     ]
 
-    gains = [max(change, 0.0) for change in changes]
-    losses = [max(-change, 0.0) for change in changes]
+    gains = [max(x, 0.0) for x in changes]
+    losses = [max(-x, 0.0) for x in changes]
 
     average_gain = sum(gains) / period
     average_loss = sum(losses) / period
@@ -217,27 +222,18 @@ def rsi(values, period=14):
     return 100.0 - (100.0 / (1.0 + rs))
 
 
-def percentile(values, fraction):
-    ordered = sorted(values)
-
-    if not ordered:
-        return 0.0
-
-    index = int((len(ordered) - 1) * fraction)
-    return ordered[index]
-
-
 def calculate_features(candles, index):
     window = candles[index - 149:index + 1]
 
     if len(window) != 150:
         return None
 
-    if any(candle["synthetic"] for candle in window):
+    if any(c["synthetic"] for c in window):
         return None
 
     closes = [c["close"] for c in window]
     highs = [c["high"] for c in window]
+    lows = [c["low"] for c in window]
     volumes = [c["volume"] for c in window]
 
     price = closes[-1]
@@ -247,9 +243,7 @@ def calculate_features(candles, index):
 
     def momentum(minutes):
         old = closes[-1 - minutes]
-        if old <= 0:
-            return 0.0
-        return ((price / old) - 1.0) * 100.0
+        return ((price / old) - 1.0) * 100.0 if old > 0 else 0.0
 
     mom5 = momentum(5)
     mom15 = momentum(15)
@@ -261,7 +255,7 @@ def calculate_features(candles, index):
     ema50 = ema(closes[-150:], 50)
     current_rsi = rsi(closes, 14)
 
-    if any(value is None for value in (ema9, ema21, ema50, current_rsi)):
+    if any(x is None for x in (ema9, ema21, ema50, current_rsi)):
         return None
 
     returns = []
@@ -272,9 +266,7 @@ def calculate_features(candles, index):
         if previous <= 0:
             return None
 
-        returns.append(
-            ((closes[i] / previous) - 1.0) * 100.0
-        )
+        returns.append((closes[i] / previous - 1.0) * 100.0)
 
     volatility = statistics.pstdev(returns)
 
@@ -285,8 +277,7 @@ def calculate_features(candles, index):
     prior_volume = sum(volumes[-30:-5]) / 25.0
 
     volume_ratio = (
-        recent_volume / prior_volume
-        if prior_volume > 0 else 1.0
+        recent_volume / prior_volume if prior_volume > 0 else 1.0
     )
 
     current_score = (
@@ -320,7 +311,7 @@ def calculate_features(candles, index):
     )
 
     prior_high = max(highs[-31:-1])
-    prior_low = min(c["low"] for c in window[-31:-1])
+    prior_low = min(lows[-31:-1])
 
     breakout_score = 0.0
 
@@ -338,6 +329,7 @@ def calculate_features(candles, index):
         + 0.25 * math.tanh(mom15 / 0.20)
         + 0.15 * math.tanh((current_rsi - 50.0) / 12.0)
     )
+
     combined_score /= (1.0 + volatility * 5.0)
 
     return {
@@ -359,11 +351,9 @@ def calculate_features(candles, index):
 
 def build_records(candles):
     records = []
-    time_index = {
-        candle["time"]: i for i, candle in enumerate(candles)
-    }
+    time_index = {c["time"]: i for i, c in enumerate(candles)}
 
-    print("Building 15-minute scheduled predictions...")
+    print("Building scheduled 15-minute predictions...")
 
     for index in range(149, len(candles) - HORIZON_MINUTES - 1):
         signal_time = candles[index]["time"] + 60
@@ -430,17 +420,11 @@ def build_records(candles):
 
 
 def choose_threshold(training, strategy):
-    candidates = (
-        0.00, 0.05, 0.10, 0.15, 0.20,
-        0.25, 0.30, 0.35, 0.40, 0.45,
-        0.50, 0.60, 0.70, 0.80, 0.90
-    )
-
     best_threshold = 0.0
     best_accuracy = -1.0
     best_count = 0
 
-    for threshold in candidates:
+    for threshold in THRESHOLDS:
         selected = [
             r for r in training
             if r["direction"] != 0
@@ -514,7 +498,6 @@ def evaluate(records, strategy, threshold):
     low, high = wilson_interval(wins, total)
 
     return {
-        "strategy": strategy,
         "predictions": total,
         "wins": wins,
         "losses": total - wins,
@@ -522,15 +505,19 @@ def evaluate(records, strategy, threshold):
             100.0 * wins / total if total else 0.0, 2
         ),
         "confidence_interval_low": low,
-        "confidence_interval_high": high,
-        "training_threshold": threshold
+        "confidence_interval_high": high
     }
 
 
-def classify_market_conditions(training, testing):
-    # Regime boundaries are learned from training data only.
+def classify_regimes(training, testing):
     train_vol = [r["volatility"] for r in training]
     train_trend = [abs(r["ema_difference"]) for r in training]
+
+    def percentile(values, fraction):
+        ordered = sorted(values)
+        if not ordered:
+            return 0.0
+        return ordered[int((len(ordered) - 1) * fraction)]
 
     low_vol = percentile(train_vol, 1 / 3)
     high_vol = percentile(train_vol, 2 / 3)
@@ -558,71 +545,48 @@ def classify_market_conditions(training, testing):
     }
 
 
-def regime_results(testing, strategy, threshold):
-    output = []
-
-    for field in ("volatility_regime", "trend_regime"):
-        labels = sorted(set(r[field] for r in testing))
-
-        for label in labels:
-            subset = [r for r in testing if r[field] == label]
-            result = evaluate(subset, strategy, threshold)
-            result["regime_type"] = field
-            result["regime"] = label
-            output.append(result)
-
-    return output
+def aggregate_results(records, strategy, threshold):
+    result = evaluate(records, strategy, threshold)
+    result["strategy"] = strategy
+    result["training_threshold"] = threshold
+    return result
 
 
-def cost_results(testing, strategy, threshold):
+def make_cost_report(records, threshold):
     selected = [
-        r for r in testing
+        r for r in records
         if r["direction"] != 0
-        and abs(r[strategy]) > 0
-        and abs(r[strategy]) >= threshold
+        and abs(r["mean_reversion"]) > 0
+        and abs(r["mean_reversion"]) >= threshold
     ]
 
     output = []
 
     for cost_bps in COSTS_BPS:
-        if not selected:
-            average_gross = 0.0
-            average_net = 0.0
-            positive_net = 0
-        else:
-            returns = []
+        returns = []
 
-            for record in selected:
-                predicted_direction = (
-                    1 if record[strategy] > 0 else -1
-                )
+        for record in selected:
+            predicted = 1 if record["mean_reversion"] > 0 else -1
+            returns.append(record["btc_return_percent"] * predicted)
 
-                signed_return = (
-                    record["btc_return_percent"] * predicted_direction
-                )
-                returns.append(signed_return)
+        gross = statistics.mean(returns) if returns else 0.0
+        cost_percent = cost_bps / 100.0
+        net = gross - cost_percent
 
-            average_gross = statistics.mean(returns)
-            cost_percent = cost_bps / 100.0
-            average_net = average_gross - cost_percent
-            positive_net = sum(
-                1 for value in returns
-                if value - cost_percent > 0
-            )
+        positive = sum(
+            1 for value in returns
+            if value - cost_percent > 0
+        )
 
         output.append({
-            "strategy": strategy,
+            "strategy": "mean_reversion",
             "predictions": len(selected),
             "assumed_round_trip_cost_bps": cost_bps,
-            "average_gross_directional_return_percent": round(
-                average_gross, 5
-            ),
-            "average_net_directional_return_percent": round(
-                average_net, 5
-            ),
+            "average_gross_directional_return_percent": round(gross, 5),
+            "average_net_directional_return_percent": round(net, 5),
             "positive_net_trade_percent": round(
-                100.0 * positive_net / len(selected)
-                if selected else 0.0, 2
+                100.0 * positive / len(selected) if selected else 0.0,
+                2
             )
         })
 
@@ -631,145 +595,243 @@ def cost_results(testing, strategy, threshold):
 
 def write_csv(filename, rows, fields):
     with open(filename, "w", newline="", encoding="utf-8") as file:
-        writer = csv.DictWriter(file, fieldnames=fields)
+        writer = csv.DictWriter(
+            file, fieldnames=fields, extrasaction="ignore"
+        )
         writer.writeheader()
         writer.writerows(rows)
 
 
 def main():
     print("=" * 72)
-    print("BTC 15-MINUTE INDEPENDENT VALIDATION")
+    print("BTC 15-MINUTE WALK-FORWARD BACKTEST")
     print("=" * 72)
 
     candles, actual_count, synthetic_count = download_candles()
     records = build_records(candles)
 
-    if len(records) < 300:
+    if len(records) < 1000:
         raise RuntimeError(
             f"Only {len(records)} valid signals found. "
-            "At least 300 are required."
+            "At least 1,000 are required."
         )
 
     first_time = candles[0]["time"]
     last_time = candles[-1]["time"]
+    initial_train_end = first_time + INITIAL_TRAIN_DAYS * 86400
 
-    train_end = first_time + TRAIN_DAYS * 86400
-    test_end = train_end + TEST_DAYS * 86400
+    folds = []
+    fold_start = initial_train_end
+    fold_number = 0
 
-    training = [
-        r for r in records
-        if r["signal_time"] < train_end
-        and r["target_time"] <= train_end
-    ]
+    while fold_start + TEST_FOLD_DAYS * 86400 <= last_time:
+        fold_end = fold_start + TEST_FOLD_DAYS * 86400
+        fold_number += 1
 
-    testing = [
-        r for r in records
-        if r["signal_time"] >= train_end
-        and r["target_time"] <= test_end
-    ]
+        training = [
+            r for r in records
+            if r["signal_time"] < fold_start
+            and r["target_time"] <= fold_start
+        ]
 
-    excluded_recent = [
-        r for r in records
-        if r["signal_time"] >= test_end
-    ]
+        testing = [
+            r for r in records
+            if r["signal_time"] >= fold_start
+            and r["target_time"] <= fold_end
+        ]
 
-    if len(training) < 300 or len(testing) < MIN_TEST_SIGNALS:
+        if len(training) >= 300 and len(testing) >= MIN_TEST_SIGNALS:
+            folds.append({
+                "fold": fold_number,
+                "start": fold_start,
+                "end": fold_end,
+                "training": training,
+                "testing": testing
+            })
+
+        fold_start = fold_end
+
+    if len(folds) < 5:
         raise RuntimeError(
-            f"Insufficient split: {len(training)} training signals, "
-            f"{len(testing)} independent test signals."
+            f"Only {len(folds)} usable test folds. "
+            "At least 5 are required."
         )
 
-    actual_days = (last_time - first_time) / 86400.0
+    all_test_records = []
+    fold_reports = []
+    strategy_fold_rows = []
+    regime_rows = []
+    fold_thresholds = {strategy: [] for strategy in STRATEGIES}
 
-    print("\nHISTORICAL PERIODS")
-    print(f"Downloaded history: {actual_days:.1f} days")
-    print(f"Training signals: {len(training)}")
-    print(f"Independent holdout signals: {len(testing)}")
-    print(f"Recent excluded signals: {len(excluded_recent)}")
-    print("Training period: oldest 15 days")
-    print("Test period: following 30 days")
-    print("Recent 30-day period: excluded from this test")
+    print(f"\nUsable walk-forward test folds: {len(folds)}")
 
-    thresholds = {}
+    for fold in folds:
+        number = fold["fold"]
+        training = fold["training"]
+        testing = fold["testing"]
 
-    for strategy in STRATEGIES:
-        if strategy in ("current", "contrarian"):
-            thresholds[strategy] = 0.0
-        else:
-            thresholds[strategy] = choose_threshold(
-                training, strategy
+        thresholds = {}
+
+        for strategy in STRATEGIES:
+            if strategy in ("current", "contrarian"):
+                thresholds[strategy] = 0.0
+            else:
+                thresholds[strategy] = choose_threshold(
+                    training, strategy
+                )
+
+            fold_thresholds[strategy].append(thresholds[strategy])
+
+        boundaries = classify_regimes(training, testing)
+
+        for record in testing:
+            record["fold"] = number
+
+        all_test_records.extend(testing)
+
+        fold_summary = {
+            "fold": number,
+            "training_signals": len(training),
+            "testing_signals": len(testing),
+            "test_start_utc": datetime.fromtimestamp(
+                fold["start"], timezone.utc
+            ).isoformat(),
+            "test_end_utc": datetime.fromtimestamp(
+                fold["end"], timezone.utc
+            ).isoformat(),
+            "thresholds": thresholds,
+            "regime_boundaries": boundaries
+        }
+
+        fold_reports.append(fold_summary)
+
+        for strategy in STRATEGIES:
+            result = evaluate(
+                testing, strategy, thresholds[strategy]
             )
 
-    print("\nTHRESHOLDS SELECTED USING TRAINING DATA ONLY")
-    for strategy, threshold in thresholds.items():
-        print(f"{strategy}: {threshold:.2f}")
+            strategy_fold_rows.append({
+                "fold": number,
+                "strategy": strategy,
+                **result,
+                "training_threshold": thresholds[strategy]
+            })
 
-    regime_boundaries = classify_market_conditions(training, testing)
+        mr_threshold = thresholds["mean_reversion"]
 
-    results = [
-        evaluate(testing, strategy, thresholds[strategy])
-        for strategy in STRATEGIES
-    ]
+        for regime_type in ("volatility_regime", "trend_regime"):
+            labels = sorted(set(r[regime_type] for r in testing))
 
-    print("\nINDEPENDENT HOLDOUT RESULTS")
-    print("-" * 88)
-    print(
-        f"{'Strategy':<19}{'Signals':>10}{'Wins':>8}"
-        f"{'Losses':>9}{'Accuracy':>12}{'95% interval':>20}"
-    )
-    print("-" * 88)
+            for label in labels:
+                subset = [
+                    r for r in testing if r[regime_type] == label
+                ]
 
-    for result in results:
-        interval = (
-            f"{result['confidence_interval_low']:.2f}-"
-            f"{result['confidence_interval_high']:.2f}%"
-        )
+                result = evaluate(
+                    subset, "mean_reversion", mr_threshold
+                )
+
+                regime_rows.append({
+                    "strategy": "mean_reversion",
+                    "fold": number,
+                    "regime_type": regime_type,
+                    "regime": label,
+                    **result,
+                    "training_threshold": mr_threshold
+                })
 
         print(
-            f"{result['strategy']:<19}"
-            f"{result['predictions']:>10}"
-            f"{result['wins']:>8}"
-            f"{result['losses']:>9}"
-            f"{result['accuracy_percent']:>11.2f}%"
-            f"{interval:>20}"
+            f"Fold {number}: "
+            f"{len(training)} training signals, "
+            f"{len(testing)} test signals"
         )
 
-    eligible = [
-        r for r in results
-        if r["predictions"] >= MIN_TEST_SIGNALS
-    ]
+    # Aggregate all genuinely out-of-sample predictions.
+    aggregate = []
 
-    best = (
-        max(eligible, key=lambda item: item["accuracy_percent"])
-        if eligible else None
-    )
-
-    regime_report = regime_results(
-        testing, "mean_reversion", thresholds["mean_reversion"]
-    )
-
-    costs_report = cost_results(
-        testing, "mean_reversion", thresholds["mean_reversion"]
-    )
-
-    print("\nMEAN-REVERSION MARKET-CONDITION RESULTS")
-    for item in regime_report:
-        print(
-            f"{item['regime_type']} / {item['regime']}: "
-            f"{item['accuracy_percent']:.2f}% "
-            f"({item['wins']}/{item['predictions']})"
+    for strategy in STRATEGIES:
+        selected_thresholds = fold_thresholds[strategy]
+        average_threshold = (
+            statistics.mean(selected_thresholds)
+            if selected_thresholds else 0.0
         )
 
-    print("\nMEAN-REVERSION HYPOTHETICAL COST ANALYSIS")
-    for item in costs_report:
-        print(
-            f"{item['assumed_round_trip_cost_bps']} bps: "
-            f"average net directional BTC return "
-            f"{item['average_net_directional_return_percent']:.5f}%"
+        wins = 0
+        total = 0
+
+        for row in strategy_fold_rows:
+            if row["strategy"] == strategy:
+                wins += row["wins"]
+                total += row["predictions"]
+
+        losses = total - wins
+        low, high = wilson_interval(wins, total)
+
+        aggregate.append({
+            "strategy": strategy,
+            "predictions": total,
+            "wins": wins,
+            "losses": losses,
+            "accuracy_percent": round(
+                100.0 * wins / total if total else 0.0, 2
+            ),
+            "confidence_interval_low": low,
+            "confidence_interval_high": high,
+            "training_threshold": round(average_threshold, 4)
+        })
+
+    # Cost analysis uses each fold's own training-selected threshold.
+    mr_selected = []
+
+    for fold in folds:
+        threshold = choose_threshold(
+            fold["training"], "mean_reversion"
         )
+
+        mr_selected.extend([
+            r for r in fold["testing"]
+            if r["direction"] != 0
+            and abs(r["mean_reversion"]) > 0
+            and abs(r["mean_reversion"]) >= threshold
+        ])
+
+    # Preserve the per-fold threshold logic for the cost report.
+    cost_report = []
+    for cost_bps in COSTS_BPS:
+        signed_returns = []
+
+        for record in mr_selected:
+            predicted = 1 if record["mean_reversion"] > 0 else -1
+            signed_returns.append(
+                record["btc_return_percent"] * predicted
+            )
+
+        gross = (
+            statistics.mean(signed_returns)
+            if signed_returns else 0.0
+        )
+        cost_percent = cost_bps / 100.0
+        positive = sum(
+            1 for value in signed_returns
+            if value - cost_percent > 0
+        )
+
+        cost_report.append({
+            "strategy": "mean_reversion",
+            "predictions": len(mr_selected),
+            "assumed_round_trip_cost_bps": cost_bps,
+            "average_gross_directional_return_percent": round(gross, 5),
+            "average_net_directional_return_percent": round(
+                gross - cost_percent, 5
+            ),
+            "positive_net_trade_percent": round(
+                100.0 * positive / len(signed_returns)
+                if signed_returns else 0.0, 2
+            )
+        })
 
     detail_fields = [
-        "signal_time", "entry_time", "target_time",
+        "fold", "signal_time", "entry_time", "target_time",
         "entry_price", "outcome_price", "direction",
         "btc_return_percent", "current", "contrarian",
         "mean_reversion", "trend", "momentum",
@@ -779,22 +841,21 @@ def main():
         "volatility_regime", "trend_regime"
     ]
 
-    result_fields = [
+    strategy_fields = [
         "strategy", "predictions", "wins", "losses",
         "accuracy_percent", "confidence_interval_low",
         "confidence_interval_high", "training_threshold"
     ]
 
     regime_fields = [
-        "strategy", "regime_type", "regime",
-        "predictions", "wins", "losses",
-        "accuracy_percent", "confidence_interval_low",
-        "confidence_interval_high", "training_threshold"
+        "strategy", "fold", "regime_type", "regime",
+        "predictions", "wins", "losses", "accuracy_percent",
+        "confidence_interval_low", "confidence_interval_high",
+        "training_threshold"
     ]
 
     cost_fields = [
-        "strategy", "predictions",
-        "assumed_round_trip_cost_bps",
+        "strategy", "predictions", "assumed_round_trip_cost_bps",
         "average_gross_directional_return_percent",
         "average_net_directional_return_percent",
         "positive_net_trade_percent"
@@ -802,61 +863,96 @@ def main():
 
     write_csv(
         "backtest_predictions.csv",
-        testing,
+        all_test_records,
         detail_fields
     )
+
+    # Aggregate results first, then include fold rows for transparency.
+    strategy_output = aggregate + [
+        {
+            "strategy": f"fold_{row['fold']}_{row['strategy']}",
+            "predictions": row["predictions"],
+            "wins": row["wins"],
+            "losses": row["losses"],
+            "accuracy_percent": row["accuracy_percent"],
+            "confidence_interval_low": row["confidence_interval_low"],
+            "confidence_interval_high": row["confidence_interval_high"],
+            "training_threshold": row["training_threshold"]
+        }
+        for row in strategy_fold_rows
+    ]
+
     write_csv(
         "backtest_strategy_results.csv",
-        results,
-        result_fields
+        strategy_output,
+        strategy_fields
     )
+
     write_csv(
         "backtest_regime_results.csv",
-        regime_report,
+        regime_rows,
         regime_fields
     )
+
     write_csv(
         "backtest_cost_results.csv",
-        costs_report,
+        cost_report,
         cost_fields
+    )
+
+    best = max(
+        aggregate,
+        key=lambda x: x["accuracy_percent"]
     )
 
     report = {
         "product": PRODUCT,
+        "backtest_type": "walk_forward",
         "requested_historical_days": DAYS,
-        "actual_historical_days": round(actual_days, 2),
-        "training_days": TRAIN_DAYS,
-        "independent_test_days": TEST_DAYS,
+        "actual_historical_days": round(
+            (last_time - first_time) / 86400.0, 2
+        ),
+        "initial_training_days": INITIAL_TRAIN_DAYS,
+        "test_fold_days": TEST_FOLD_DAYS,
+        "number_of_test_folds": len(folds),
         "horizon_minutes": HORIZON_MINUTES,
         "signal_schedule_utc": [":07", ":22", ":37", ":52"],
         "entry": "Scheduled one-minute candle open",
         "exit": "One-minute candle open exactly 15 minutes later",
         "actual_candles": actual_count,
         "synthetic_candles": synthetic_count,
-        "training_signals": len(training),
-        "independent_test_signals": len(testing),
-        "recent_excluded_signals": len(excluded_recent),
-        "thresholds_selected_on_training_only": thresholds,
-        "market_regime_boundaries_from_training": regime_boundaries,
-        "results": results,
-        "mean_reversion_regime_results": regime_report,
-        "mean_reversion_hypothetical_cost_results": costs_report,
+        "out_of_sample_signals": len(all_test_records),
+        "folds": fold_reports,
+        "aggregate_strategy_results": aggregate,
+        "fold_strategy_results": strategy_fold_rows,
+        "mean_reversion_regime_results": regime_rows,
+        "mean_reversion_hypothetical_cost_results": cost_report,
         "highest_accuracy_candidate": best,
         "important_limitations": [
-            "The independent holdout is older than the recent period "
-            "used in the previous backtest.",
-            "The most recent 30 days are excluded from this test.",
+            "Thresholds are selected using only data before each test fold.",
+            "The reported aggregate combines multiple historical test periods.",
+            "The strategy with the highest historical accuracy is not guaranteed to remain best.",
+            "Confidence intervals do not fully account for time dependence or strategy selection.",
             "Hypothetical BTC directional costs are not Polymarket fees.",
             "Directional BTC return is not the same as Polymarket contract profit.",
             "Accuracy does not guarantee profitability.",
-            "A further untouched future test is needed before live deployment."
+            "A live paper-trading period is still needed before risking money."
         ]
     }
 
-    with open(
-        "backtest_results.json", "w", encoding="utf-8"
-    ) as file:
+    with open("backtest_results.json", "w", encoding="utf-8") as file:
         json.dump(report, file, indent=2)
+
+    print("\nAGGREGATE WALK-FORWARD RESULTS")
+    print("-" * 88)
+
+    for result in aggregate:
+        print(
+            f"{result['strategy']:<19}"
+            f"{result['predictions']:>8} signals  "
+            f"{result['accuracy_percent']:>6.2f}%  "
+            f"({result['wins']} wins / {result['losses']} losses)"
+        )
 
     print("\nREPORTS SAVED")
     print("backtest_results.json")
@@ -864,8 +960,7 @@ def main():
     print("backtest_strategy_results.csv")
     print("backtest_regime_results.csv")
     print("backtest_cost_results.csv")
-
-    print("\nBACKTEST COMPLETE")
+    print("\nWALK-FORWARD BACKTEST COMPLETE")
 
 
 if __name__ == "__main__":
