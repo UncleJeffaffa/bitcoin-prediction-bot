@@ -22,13 +22,13 @@ jobs:
         with:
           python-version: "3.12"
 
-      - name: Run advanced backtest
+      - name: Run independent backtest
         run: python backtest.py
 
-      - name: Save reports
+      - name: Save all backtest reports
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add backtest_results.json backtest_predictions.csv backtest_strategy_results.csv
-          git diff --cached --quiet || git commit -m "Save backtest results"
+          git add backtest_results.json backtest_predictions.csv backtest_strategy_results.csv backtest_regime_results.csv backtest_cost_results.csv
+          git diff --cached --quiet || git commit -m "Save independent backtest results"
           git push origin HEAD:main
