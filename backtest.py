@@ -4,23 +4,32 @@ import json
 import math
 import time
 import requests
+
 from datetime import datetime, timedelta, timezone
 
 API = "https://api.exchange.coinbase.com"
 PRODUCT = "BTC-USD"
+
 DAYS = 30
 TRAIN_DAYS = 7
 HORIZON = 15
-HEADERS = {"User-Agent": "BTC-15m-Backtest/1.0"}
+MAX_FILLED_GAP_MINUTES = 5
+
+HEADERS = {
+    "User-Agent": "BTC-15m-Historical-Backtest/2.0"
+}
 
 
 def ema(values, period):
     if len(values) < period:
         return None
+
     alpha = 2 / (period + 1)
     result = values[0]
+
     for value in values[1:]:
         result = alpha * value + (1 - alpha) * result
+
     return result
 
 
@@ -29,6 +38,7 @@ def rsi(values, period=14):
         values[i] - values[i - 1]
         for i in range(1, len(values))
     ]
+
     changes = changes[-period:]
 
     if len(changes) < period:
@@ -50,11 +60,78 @@ def tanh(x):
     return math.tanh(x)
 
 
+def repair_short_gaps(candles):
+    """
+    Fill short missing intervals with synthetic flat candles.
+
+    Synthetic candles use the previous close for OHLC
+    and zero volume. Gaps longer than the configured limit
+    are rejected rather than silently filled.
+    """
+
+    if not candles:
+        raise RuntimeError("No historical candles were downloaded.")
+
+    repaired = [candles[0]]
+    filled_count = 0
+    gap_count = 0
+
+    for current in candles[1:]:
+        previous = repaired[-1]
+
+        difference = current["time"] - previous["time"]
+
+        if difference <= 0:
+            continue
+
+        if difference % 60 != 0:
+            raise RuntimeError(
+                "Historical candle timestamps are not aligned "
+                "to one-minute intervals."
+            )
+
+        missing_minutes = difference // 60 - 1
+
+        if missing_minutes > 0:
+            gap_count += 1
+
+            if missing_minutes > MAX_FILLED_GAP_MINUTES:
+                raise RuntimeError(
+                    f"Found a gap of {missing_minutes} minutes. "
+                    "This is too large to reconstruct safely."
+                )
+
+            previous_close = previous["close"]
+
+            for minute in range(1, missing_minutes + 1):
+                synthetic_time = previous["time"] + minute * 60
+
+                repaired.append({
+                    "time": synthetic_time,
+                    "open": previous_close,
+                    "high": previous_close,
+                    "low": previous_close,
+                    "close": previous_close,
+                    "volume": 0.0,
+                    "synthetic": True
+                })
+
+                filled_count += 1
+
+        repaired.append(current)
+
+    print(f"Missing intervals found: {gap_count}")
+    print(f"Synthetic candles inserted: {filled_count}")
+
+    return repaired, filled_count
+
+
 def download_candles():
     end = datetime.now(timezone.utc).replace(
         second=0,
         microsecond=0
     )
+
     start = end - timedelta(days=DAYS)
 
     rows = []
@@ -84,6 +161,7 @@ def download_candles():
                     headers=HEADERS,
                     timeout=30
                 )
+
                 response.raise_for_status()
                 break
 
@@ -103,13 +181,16 @@ def download_candles():
 
     for row in rows:
         if len(row) >= 6:
-            unique[int(row[0])] = {
-                "time": int(row[0]),
+            timestamp = int(row[0])
+
+            unique[timestamp] = {
+                "time": timestamp,
                 "low": float(row[1]),
                 "high": float(row[2]),
                 "open": float(row[3]),
                 "close": float(row[4]),
-                "volume": float(row[5])
+                "volume": float(row[5]),
+                "synthetic": False
             }
 
     candles = sorted(
@@ -131,48 +212,27 @@ def download_candles():
             "Not enough data for this backtest."
         )
 
-    # Identify missing one-minute intervals.
-    gaps = [
-        (candles[i - 1]["time"], candles[i]["time"])
-        for i in range(1, len(candles))
-        if candles[i]["time"] - candles[i - 1]["time"] != 60
-    ]
-
-    if gaps:
-        print(
-            f"Found {len(gaps)} gaps in historical data:"
-        )
-
-        for previous_time, next_time in gaps[:10]:
-            print(
-                f"Previous candle: {previous_time}, "
-                f"Next candle: {next_time}, "
-                f"Missing minutes: "
-                f"{(next_time - previous_time) // 60 - 1}"
-            )
-
-        raise RuntimeError(
-            "Backtest stopped so missing historical data "
-            "can be investigated."
-        )
+    original_count = len(candles)
 
     print(
-        f"Downloaded {len(candles)} unique completed candles."
+        f"Downloaded {original_count} actual completed candles."
     )
 
-    return candles
+    candles, synthetic_count = repair_short_gaps(candles)
+
+    print(
+        f"Total candles after reconstruction: {len(candles)}"
+    )
+
+    return candles, synthetic_count
 
 
 def features(candles, i):
-    closes = [
-        c["close"] for c in candles[:i + 1]
-    ]
-    highs = [
-        c["high"] for c in candles[:i + 1]
-    ]
-    lows = [
-        c["low"] for c in candles[:i + 1]
-    ]
+    history = candles[:i + 1]
+
+    closes = [c["close"] for c in history]
+    highs = [c["high"] for c in history]
+    lows = [c["low"] for c in history]
 
     price = closes[-1]
 
@@ -181,19 +241,25 @@ def features(candles, i):
 
     def momentum(minutes):
         old = closes[-1 - minutes]
-        return (price / old - 1) * 100 if old else 0
+
+        if old == 0:
+            return 0.0
+
+        return (price / old - 1) * 100
 
     mom5 = momentum(5)
     mom15 = momentum(15)
     mom30 = momentum(30)
     mom60 = momentum(60)
 
+    # Match the live bot's EMA calculation windows.
     e9 = ema(closes[-100:], 9)
     e21 = ema(closes[-100:], 21)
     e50 = ema(closes[-150:], 50)
 
     if not all(
-        x is not None for x in [e9, e21, e50]
+        value is not None
+        for value in [e9, e21, e50]
     ):
         return None
 
@@ -205,18 +271,22 @@ def features(candles, i):
         if closes[j - 1] != 0
     ]
 
+    if not changes:
+        return None
+
     mean_change = sum(changes) / len(changes)
 
     volatility = math.sqrt(
         sum(
-            (x - mean_change) ** 2
-            for x in changes
+            (value - mean_change) ** 2
+            for value in changes
         ) / len(changes)
     )
 
     ema_difference = ((e9 - e21) / price) * 100
     long_trend = ((e21 - e50) / price) * 100
 
+    # Current bot calculation.
     score = (
         0.15 * tanh(mom5 / 0.10)
         + 0.20 * tanh(mom15 / 0.20)
@@ -229,7 +299,7 @@ def features(candles, i):
 
     adjusted = score / (1 + volatility * 5)
 
-    current_bot_probability = round(
+    current_probability = round(
         50 + 30 * tanh(adjusted * 2),
         1
     )
@@ -275,7 +345,7 @@ def features(candles, i):
 
     return {
         "current": (
-            1 if current_bot_probability >= 50 else -1
+            1 if current_probability >= 50 else -1
         ),
         "ema": ema_score,
         "rsi": rsi_score,
@@ -285,29 +355,31 @@ def features(candles, i):
 
 
 def choose_threshold(training, strategy):
-    # Select a threshold using training data only.
+    # Threshold selection uses training data only.
     best_threshold = 0
     best_accuracy = -1
     best_count = 0
 
-    for threshold in [
+    threshold_values = [
         0, .05, .10, .15, .20, .25, .30,
         .35, .40, .45, .50, .60, .70, .80
-    ]:
+    ]
+
+    for threshold in threshold_values:
         selected = [
-            x for x in training
-            if abs(x[strategy]) >= threshold
-            and x["direction"] != 0
+            record for record in training
+            if abs(record[strategy]) >= threshold
+            and record["direction"] != 0
         ]
 
         if len(selected) < 30:
             continue
 
         wins = sum(
-            1 for x in selected
+            1 for record in selected
             if (
-                1 if x[strategy] > 0 else -1
-            ) == x["direction"]
+                1 if record[strategy] > 0 else -1
+            ) == record["direction"]
         )
 
         accuracy = wins / len(selected)
@@ -327,7 +399,7 @@ def choose_threshold(training, strategy):
 
 
 def main():
-    candles = download_candles()
+    candles, synthetic_count = download_candles()
 
     first_time = candles[0]["time"]
 
@@ -345,7 +417,7 @@ def main():
 
     records = []
 
-    print("Calculating 15-minute predictions...")
+    print("\nCalculating 15-minute predictions...")
 
     for i in range(
         150,
@@ -353,7 +425,7 @@ def main():
     ):
         signal_time = candles[i]["time"] + 60
 
-        # Match the live bot's 15-minute schedule.
+        # Match the live bot's scheduled prediction times.
         if signal_time % 3600 not in (
             7 * 60,
             22 * 60,
@@ -362,9 +434,9 @@ def main():
         ):
             continue
 
-        f = features(candles, i)
+        signal = features(candles, i)
 
-        if f is None:
+        if signal is None:
             continue
 
         # Entry is the next candle's open.
@@ -373,14 +445,12 @@ def main():
         entry_price = candles[entry_index]["open"]
         entry_time = candles[entry_index]["time"]
 
-        # Find the first candle beginning at or after
-        # the 15-minute target time.
         target_time = entry_time + HORIZON * 60
 
+        # The target candle begins at or after target_time.
         outcome_index = next(
             (
-                j
-                for j in range(
+                j for j in range(
                     entry_index + 1,
                     len(candles)
                 )
@@ -392,11 +462,11 @@ def main():
         if outcome_index is None:
             continue
 
-        outcome_price = candles[outcome_index]["close"]
+        outcome_candle = candles[outcome_index]
+        outcome_price = outcome_candle["close"]
 
         if outcome_price == entry_price:
             direction = 0
-
         else:
             direction = (
                 1 if outcome_price > entry_price else -1
@@ -404,22 +474,33 @@ def main():
 
         record = {
             "time": signal_time,
-            "direction": direction,
+            "entry_time": entry_time,
+            "target_time": target_time,
+            "outcome_time": outcome_candle["time"],
             "entry": entry_price,
-            "outcome": outcome_price
+            "outcome": outcome_price,
+            "direction": direction,
+            "entry_synthetic": candles[entry_index]["synthetic"],
+            "outcome_synthetic": outcome_candle["synthetic"]
         }
 
-        record.update(f)
+        record.update(signal)
         records.append(record)
 
+    # A training result must have fully completed before
+    # the training period ends. This prevents label leakage.
     training = [
-        x for x in records
-        if x["time"] < training_end
+        record for record in records
+        if (
+            record["time"] < training_end
+            and record["outcome_time"] + 60 <= training_end
+        )
     ]
 
+    # Out-of-sample predictions begin only after training ends.
     testing = [
-        x for x in records
-        if x["time"] >= training_end
+        record for record in records
+        if record["time"] >= training_end
     ]
 
     if len(training) < 100 or len(testing) < 100:
@@ -428,7 +509,9 @@ def main():
             "Check the downloaded historical data."
         )
 
-    thresholds = {"current": 0}
+    thresholds = {
+        "current": 0
+    }
 
     for strategy in strategies[1:]:
         thresholds[strategy] = choose_threshold(
@@ -436,17 +519,25 @@ def main():
             strategy
         )
 
-    print(
-        "\nTRAINING PERIOD:",
-        len(training),
-        "signals"
-    )
+    print("\nDATA QUALITY")
+    print(f"Actual candles: {len(candles) - synthetic_count}")
+    print(f"Reconstructed candles: {synthetic_count}")
+    print("Reconstructed candles use previous close and zero volume.")
 
-    print(
-        "OUT-OF-SAMPLE PERIOD:",
-        len(testing),
-        "signals"
-    )
+    print("\nTRAINING PERIOD")
+    print(f"Signals: {len(training)}")
+    print("Training duration: 7 days")
+
+    print("\nOUT-OF-SAMPLE PERIOD")
+    print(f"Signals: {len(testing)}")
+    print("Out-of-sample duration: approximately 23 days")
+
+    print("\nTRAINED THRESHOLDS")
+
+    for strategy in strategies:
+        print(
+            f"{strategy}: {thresholds[strategy]}"
+        )
 
     print("\nOUT-OF-SAMPLE RESULTS")
 
@@ -461,16 +552,18 @@ def main():
         threshold = thresholds[strategy]
 
         selected = [
-            x for x in testing
-            if abs(x[strategy]) >= threshold
-            and x["direction"] != 0
+            record for record in testing
+            if (
+                abs(record[strategy]) >= threshold
+                and record["direction"] != 0
+            )
         ]
 
         wins = sum(
-            1 for x in selected
+            1 for record in selected
             if (
-                1 if x[strategy] > 0 else -1
-            ) == x["direction"]
+                1 if record[strategy] > 0 else -1
+            ) == record["direction"]
         )
 
         losses = len(selected) - wins
@@ -498,8 +591,8 @@ def main():
         )
 
     baseline = next(
-        x for x in results
-        if x["strategy"] == "current"
+        result for result in results
+        if result["strategy"] == "current"
     )
 
     print("\nPERFORMANCE VS CURRENT BOT")
@@ -511,23 +604,35 @@ def main():
         )
 
         print(
-            result["strategy"],
+            f"{result['strategy']}: "
             f"{difference:+.2f} percentage points"
         )
+
+    report = {
+        "product": PRODUCT,
+        "days": DAYS,
+        "training_days": TRAIN_DAYS,
+        "out_of_sample_days": DAYS - TRAIN_DAYS,
+        "horizon_minutes": HORIZON,
+        "actual_candles": len(candles) - synthetic_count,
+        "synthetic_candles": synthetic_count,
+        "synthetic_candle_method": (
+            "Previous close used for OHLC; volume set to zero."
+        ),
+        "entry_method": "Next one-minute candle open",
+        "outcome_method": (
+            "Close of first candle beginning at or after "
+            "the 15-minute target"
+        ),
+        "results": results
+    }
 
     with open(
         "backtest_results.json",
         "w"
     ) as file:
         json.dump(
-            {
-                "product": PRODUCT,
-                "days": DAYS,
-                "training_days": TRAIN_DAYS,
-                "out_of_sample_days": DAYS - TRAIN_DAYS,
-                "candles": len(candles),
-                "results": results
-            },
+            report,
             file,
             indent=2
         )
@@ -537,19 +642,26 @@ def main():
         "w",
         newline=""
     ) as file:
+        fields = [
+            "time",
+            "entry_time",
+            "target_time",
+            "outcome_time",
+            "entry",
+            "outcome",
+            "direction",
+            "entry_synthetic",
+            "outcome_synthetic",
+            "current",
+            "ema",
+            "rsi",
+            "breakout",
+            "combined"
+        ]
+
         writer = csv.DictWriter(
             file,
-            fieldnames=[
-                "time",
-                "entry",
-                "outcome",
-                "direction",
-                "current",
-                "ema",
-                "rsi",
-                "breakout",
-                "combined"
-            ]
+            fieldnames=fields
         )
 
         writer.writeheader()
@@ -557,10 +669,9 @@ def main():
         for record in testing:
             writer.writerow(record)
 
-    print(
-        "\nSaved backtest_results.json "
-        "and backtest_predictions.csv"
-    )
+    print("\nSaved backtest_results.json")
+    print("Saved backtest_predictions.csv")
+    print("\nBACKTEST COMPLETE")
 
 
 if __name__ == "__main__":
