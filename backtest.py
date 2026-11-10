@@ -54,7 +54,7 @@ def download_candles():
             "end": batch_end.isoformat()
         }
 
-                response = None
+        response = None
 
         for attempt in range(5):
             try:
