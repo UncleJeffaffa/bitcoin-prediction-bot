@@ -99,16 +99,22 @@ def download_candles():
             f"Only {len(candles)} candles downloaded. "
             "Not enough data for this backtest."
         )
-    gaps = [
-        candles[i]["time"] - candles[i-1]["time"]
+        gaps = [
+        (candles[i-1]["time"], candles[i]["time"])
         for i in range(1, len(candles))
         if candles[i]["time"] - candles[i-1]["time"] != 60
     ]
 
     if gaps:
+        print(f"Found {len(gaps)} gaps in historical data:")
+        for previous_time, next_time in gaps[:10]:
+            print(
+                f"Previous candle: {previous_time}, "
+                f"Next candle: {next_time}, "
+                f"Missing minutes: {(next_time - previous_time) // 60 - 1}"
+            )
         raise RuntimeError(
-            f"Historical data has {len(gaps)} missing one-minute intervals. "
-            "Backtest stopped to avoid misleading results."
+            "Backtest stopped so missing historical data can be investigated."
         )
     
     print(f"Downloaded {len(candles)} unique completed candles.")
