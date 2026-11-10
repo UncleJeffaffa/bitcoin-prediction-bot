@@ -7,76 +7,89 @@ import statistics
 import urllib.request
 from datetime import datetime, timezone, timedelta
 
-HISTORY_FILE = "predictions.csv"
 BASE_URL = "https://api.exchange.coinbase.com"
 PRODUCT = "BTC-USD"
+
+HISTORY_FILE = "predictions.csv"
+PAPER_FILE = "paper_mean_reversion.csv"
+
+CURRENT_FIELDS = [
+    "prediction_id", "created_at", "starting_price",
+    "prediction", "up_probability", "down_probability",
+    "target_at", "outcome_price", "outcome",
+    "correct", "evaluated_at"
+]
+
+PAPER_FIELDS = [
+    "prediction_id", "created_at", "starting_price",
+    "prediction", "mean_reversion_score", "rsi",
+    "momentum_15m", "target_at", "outcome_price",
+    "outcome", "correct", "evaluated_at"
+]
 
 
 def get_json(url):
     request = urllib.request.Request(
         url,
-        headers={"User-Agent": "BitcoinPredictionBot/2.0"}
+        headers={"User-Agent": "BitcoinPredictionBot/3.0"}
     )
-    with urllib.request.urlopen(request, timeout=20) as response:
-        return json.loads(response.read().decode())
+    with urllib.request.urlopen(request, timeout=30) as response:
+        return json.loads(response.read().decode("utf-8"))
 
 
 def get_market_data():
-    ticker = get_json(
-        f"{BASE_URL}/products/{PRODUCT}/ticker"
-    )
-
     candles = get_json(
         f"{BASE_URL}/products/{PRODUCT}/candles?granularity=60"
     )
 
     candles = sorted(candles, key=lambda x: x[0])
-
     now = datetime.now(timezone.utc).timestamp()
 
-    # Remove unfinished candles
     candles = [
         c for c in candles
         if c[0] + 60 <= now
     ]
 
-    if len(candles) < 100:
-        raise RuntimeError("Not enough completed Bitcoin candles")
+    if len(candles) < 150:
+        raise RuntimeError("Not enough completed Bitcoin candles.")
 
     prices = [float(c[4]) for c in candles]
 
-    return float(ticker["price"]), candles, prices
+    return candles, prices
 
 
 def calculate_ema(prices, period):
+    if len(prices) < period:
+        raise RuntimeError("Not enough prices for EMA.")
+
     multiplier = 2 / (period + 1)
-    ema = prices[0]
+    value = prices[0]
 
     for price in prices[1:]:
-        ema = price * multiplier + ema * (1 - multiplier)
+        value = price * multiplier + value * (1 - multiplier)
 
-    return ema
+    return value
 
 
 def calculate_rsi(prices, period=14):
+    if len(prices) < period + 1:
+        raise RuntimeError("Not enough prices for RSI.")
+
     changes = [
         prices[i] - prices[i - 1]
-        for i in range(1, len(prices))
+        for i in range(len(prices) - period, len(prices))
     ]
 
-    recent = changes[-period:]
+    gains = [max(change, 0) for change in changes]
+    losses = [abs(min(change, 0)) for change in changes]
 
-    gains = [max(change, 0) for change in recent]
-    losses = [abs(min(change, 0)) for change in recent]
+    average_gain = sum(gains) / period
+    average_loss = sum(losses) / period
 
-    avg_gain = sum(gains) / period
-    avg_loss = sum(losses) / period
+    if average_loss == 0:
+        return 100.0 if average_gain > 0 else 50.0
 
-    if avg_loss == 0:
-        return 100.0 if avg_gain > 0 else 50.0
-
-    rs = avg_gain / avg_loss
-
+    rs = average_gain / average_loss
     return 100 - (100 / (1 + rs))
 
 
@@ -87,42 +100,28 @@ def momentum(prices, minutes):
     old_price = prices[-(minutes + 1)]
     new_price = prices[-1]
 
-    return ((new_price - old_price) / old_price) * 100
+    return ((new_price / old_price) - 1) * 100
 
 
 def calculate_volatility(prices, period=30):
     changes = [
-        (prices[i] - prices[i - 1]) / prices[i - 1] * 100
+        (prices[i] / prices[i - 1] - 1) * 100
         for i in range(len(prices) - period, len(prices))
     ]
 
     return statistics.pstdev(changes)
 
 
-def load_history():
-    if not os.path.exists(HISTORY_FILE):
+def load_history(filename):
+    if not os.path.exists(filename):
         return []
 
-    with open(HISTORY_FILE, "r", newline="") as file:
+    with open(filename, "r", newline="", encoding="utf-8") as file:
         return list(csv.DictReader(file))
 
 
-def save_history(records):
-    fields = [
-        "prediction_id",
-        "created_at",
-        "starting_price",
-        "prediction",
-        "up_probability",
-        "down_probability",
-        "target_at",
-        "outcome_price",
-        "outcome",
-        "correct",
-        "evaluated_at"
-    ]
-
-    with open(HISTORY_FILE, "w", newline="") as file:
+def save_history(filename, records, fields):
+    with open(filename, "w", newline="", encoding="utf-8") as file:
         writer = csv.DictWriter(file, fieldnames=fields)
         writer.writeheader()
         writer.writerows(records)
@@ -133,7 +132,7 @@ def evaluate_predictions(records, candles, now):
     current_time = now.timestamp()
 
     for record in records:
-        if record["outcome"]:
+        if record.get("outcome"):
             continue
 
         target = datetime.fromisoformat(
@@ -141,15 +140,15 @@ def evaluate_predictions(records, candles, now):
         ).timestamp()
 
         eligible = [
-            c for c in candles
-            if c[0] >= target and c[0] + 60 <= current_time
+            candle for candle in candles
+            if candle[0] >= target
+            and candle[0] + 60 <= current_time
         ]
 
         if not eligible:
             continue
 
-        candle = min(eligible, key=lambda c: c[0])
-
+        candle = min(eligible, key=lambda item: item[0])
         outcome_price = float(candle[4])
         starting_price = float(record["starting_price"])
 
@@ -175,32 +174,32 @@ def evaluate_predictions(records, candles, now):
     return evaluated
 
 
-def show_accuracy(records):
+def show_accuracy(records, title):
     completed = [
-        r for r in records
-        if r["correct"] in ("True", "False")
+        record for record in records
+        if record.get("correct") in ("True", "False")
     ]
 
-    correct = sum(
-        r["correct"] == "True"
-        for r in completed
+    wins = sum(
+        record["correct"] == "True"
+        for record in completed
     )
 
     total = len(completed)
 
-    print("\nPREDICTION ACCURACY")
-    print(f"Completed: {total}")
-    print(f"Correct: {correct}")
-    print(f"Incorrect: {total - correct}")
+    print(f"\n{title}")
+    print(f"Completed predictions: {total}")
+    print(f"Correct: {wins}")
+    print(f"Incorrect: {total - wins}")
 
     if total:
-        print(f"Accuracy: {correct / total * 100:.1f}%")
+        print(f"Accuracy: {wins / total * 100:.2f}%")
     else:
         print("Accuracy: Waiting for results")
 
 
-def make_prediction(price, prices):
-    rsi = calculate_rsi(prices)
+def make_current_prediction(price, prices):
+    rsi_value = calculate_rsi(prices)
 
     mom5 = momentum(prices, 5)
     mom15 = momentum(prices, 15)
@@ -216,7 +215,6 @@ def make_prediction(price, prices):
     ema_difference = ((ema9 - ema21) / price) * 100
     long_trend = ((ema21 - ema50) / price) * 100
 
-    # Normalize market indicators
     score = (
         0.15 * math.tanh(mom5 / 0.10)
         + 0.20 * math.tanh(mom15 / 0.20)
@@ -224,113 +222,151 @@ def make_prediction(price, prices):
         + 0.10 * math.tanh(mom60 / 0.40)
         + 0.20 * math.tanh(ema_difference / 0.12)
         + 0.10 * math.tanh(long_trend / 0.20)
-        + 0.10 * math.tanh((rsi - 50) / 12)
+        + 0.10 * math.tanh((rsi_value - 50) / 12)
     )
 
-    # Reduce confidence when market volatility is unusually high
-    volatility_factor = 1 / (1 + volatility * 5)
-
-    adjusted_score = score * volatility_factor
+    adjusted_score = score / (1 + volatility * 5)
 
     up_probability = round(
         50 + 30 * math.tanh(adjusted_score * 2),
         1
     )
 
-    down_probability = round(100 - up_probability, 1)
+    return {
+        "prediction": "UP" if up_probability >= 50 else "DOWN",
+        "up_probability": up_probability,
+        "down_probability": round(100 - up_probability, 1)
+    }
 
-    prediction = (
-        "UP" if up_probability >= 50 else "DOWN"
+
+def make_mean_reversion_prediction(prices):
+    rsi_value = calculate_rsi(prices)
+    mom15 = momentum(prices, 15)
+
+    # Same mean-reversion scoring formula used in the backtest.
+    score = (
+        -0.60 * math.tanh((rsi_value - 50) / 12)
+        -0.40 * math.tanh(mom15 / 0.20)
     )
 
+    prediction = "UP" if score > 0 else "DOWN"
+
     return {
-        "price": round(price, 2),
         "prediction": prediction,
-        "up_probability": up_probability,
-        "down_probability": down_probability,
-        "rsi": round(rsi, 2),
-        "momentum_5m": round(mom5, 4),
-        "momentum_15m": round(mom15, 4),
-        "momentum_30m": round(mom30, 4),
-        "momentum_60m": round(mom60, 4),
-        "ema_9": round(ema9, 2),
-        "ema_21": round(ema21, 2),
-        "ema_50": round(ema50, 2),
-        "volatility": round(volatility, 5)
+        "score": round(score, 6),
+        "rsi": round(rsi_value, 2),
+        "momentum_15m": round(mom15, 5)
     }
 
 
 def main():
-    now = datetime.now(timezone.utc)
+    now = datetime.now(timezone.utc).replace(second=0, microsecond=0)
 
-    print("=" * 45)
-    print("BITCOIN 15-MINUTE PREDICTION BOT V2")
-    print("=" * 45)
+    print("=" * 55)
+    print("BITCOIN 15-MINUTE PREDICTION BOT")
+    print("CURRENT STRATEGY + MEAN-REVERSION PAPER TEST")
+    print("=" * 55)
 
-    print("\nTIME (UTC):")
-    print(now.isoformat())
+    print(f"\nUTC time: {now.isoformat()}")
 
-    price, candles, prices = get_market_data()
+    candles, prices = get_market_data()
 
-    records = load_history()
+    # Use the most recently completed candle close as the entry price.
+    price = float(candles[-1][4])
 
-    evaluated = evaluate_predictions(
-        records, candles, now
+    current_records = load_history(HISTORY_FILE)
+    paper_records = load_history(PAPER_FILE)
+
+    current_evaluated = evaluate_predictions(
+        current_records, candles, now
     )
 
-    result = make_prediction(price, prices)
+    paper_evaluated = evaluate_predictions(
+        paper_records, candles, now
+    )
 
+    # Keep the target aligned to the scheduled 15-minute signal.
     target_time = now + timedelta(minutes=15)
 
-    records.append({
-        "prediction_id": now.strftime("%Y%m%d%H%M%S"),
-        "created_at": now.isoformat(),
-        "starting_price": result["price"],
-        "prediction": result["prediction"],
-        "up_probability": result["up_probability"],
-        "down_probability": result["down_probability"],
-        "target_at": target_time.isoformat(),
-        "outcome_price": "",
-        "outcome": "",
-        "correct": "",
-        "evaluated_at": ""
-    })
+    prediction_id = now.strftime("%Y%m%d%H%M")
 
-    save_history(records)
+    # Avoid duplicate entries if the workflow is manually rerun
+    # during the same UTC minute.
+    current_exists = any(
+        record["prediction_id"] == prediction_id
+        for record in current_records
+    )
 
-    print("\nCURRENT BITCOIN PRICE:")
-    print(f"${result['price']:,.2f}")
+    paper_exists = any(
+        record["prediction_id"] == prediction_id
+        for record in paper_records
+    )
 
-    print("\n15-MINUTE PREDICTION:")
-    print(result["prediction"])
+    current = make_current_prediction(price, prices)
+    mean_reversion = make_mean_reversion_prediction(prices)
 
-    print("\nESTIMATED DIRECTIONAL SCORES:")
-    print(f"UP: {result['up_probability']}%")
-    print(f"DOWN: {result['down_probability']}%")
+    if not current_exists:
+        current_records.append({
+            "prediction_id": prediction_id,
+            "created_at": now.isoformat(),
+            "starting_price": round(price, 2),
+            "prediction": current["prediction"],
+            "up_probability": current["up_probability"],
+            "down_probability": current["down_probability"],
+            "target_at": target_time.isoformat(),
+            "outcome_price": "",
+            "outcome": "",
+            "correct": "",
+            "evaluated_at": ""
+        })
 
-    print("\nTECHNICAL INDICATORS:")
+    if not paper_exists:
+        paper_records.append({
+            "prediction_id": prediction_id,
+            "created_at": now.isoformat(),
+            "starting_price": round(price, 2),
+            "prediction": mean_reversion["prediction"],
+            "mean_reversion_score": mean_reversion["score"],
+            "rsi": mean_reversion["rsi"],
+            "momentum_15m": mean_reversion["momentum_15m"],
+            "target_at": target_time.isoformat(),
+            "outcome_price": "",
+            "outcome": "",
+            "correct": "",
+            "evaluated_at": ""
+        })
 
-    for key in [
-        "rsi",
-        "momentum_5m",
-        "momentum_15m",
-        "momentum_30m",
-        "momentum_60m",
-        "ema_9",
-        "ema_21",
-        "ema_50",
-        "volatility"
-    ]:
-        print(f"{key}: {result[key]}")
+    save_history(
+        HISTORY_FILE, current_records, CURRENT_FIELDS
+    )
 
-    print("\nNEW PREDICTION SAVED")
-    print(f"Target time: {target_time.isoformat()}")
+    save_history(
+        PAPER_FILE, paper_records, PAPER_FIELDS
+    )
 
-    print(f"\nPreviously evaluated: {evaluated}")
+    print(f"\nBITCOIN PRICE: ${price:,.2f}")
 
-    show_accuracy(records)
+    print("\nCURRENT BOT PREDICTION:")
+    print(current["prediction"])
+    print(f"UP score: {current['up_probability']}%")
+    print(f"DOWN score: {current['down_probability']}%")
 
-    print("\nPREDICTION COMPLETE")
+    print("\nMEAN-REVERSION PAPER PREDICTION:")
+    print(mean_reversion["prediction"])
+    print(f"Mean-reversion score: {mean_reversion['score']}")
+    print(f"RSI: {mean_reversion['rsi']}")
+    print(f"15-minute momentum: {mean_reversion['momentum_15m']}")
+
+    print(f"\nTarget time: {target_time.isoformat()}")
+
+    print(f"\nCurrent predictions evaluated: {current_evaluated}")
+    print(f"Paper predictions evaluated: {paper_evaluated}")
+
+    show_accuracy(current_records, "CURRENT BOT RESULTS")
+    show_accuracy(paper_records, "MEAN-REVERSION PAPER RESULTS")
+
+    print("\nBoth prediction files saved.")
+    print("PREDICTION RUN COMPLETE")
 
 
 if __name__ == "__main__":
