@@ -32,7 +32,7 @@ def rsi(values, period=14):
     avg_gain = sum(gains) / period
     avg_loss = sum(losses) / period
     if avg_loss == 0:
-        return 100
+    return 100.0 if avg_gain > 0 else 50.0
     return 100 - (100 / (1 + avg_gain / avg_loss))
 
 def tanh(x):
@@ -193,8 +193,9 @@ def choose_threshold(training, strategy):
     for threshold in [0, .05, .10, .15, .20, .25, .30,
                       .35, .40, .45, .50, .60, .70, .80]:
         selected = [
-            x for x in training
-            if abs(x[strategy]) >= threshold
+    x for x in training
+    if abs(x[strategy]) >= threshold and x["direction"] != 0
+]
         ]
         if len(selected) < 30:
             continue
@@ -224,8 +225,8 @@ def main():
         signal_time = candles[i]["time"] + 60
 
         # Match a bot scheduled every 15 minutes.
-        if signal_time % 900 != 0:
-            continue
+       if signal_time % 3600 not in (7 * 60, 22 * 60, 37 * 60, 52 * 60):
+    continue
 
         f = features(candles, i)
         if f is None:
