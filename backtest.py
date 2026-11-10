@@ -150,7 +150,7 @@ def features(candles, i):
     )
 
     ema_difference = ((e9 - e21) / price) * 100
-long_trend = ((e21 - e50) / price) * 100
+    long_trend = ((e21 - e50) / price) * 100
 
     score = (
         0.15 * tanh(mom5 / 0.10)
@@ -212,7 +212,7 @@ def choose_threshold(training, strategy):
 
     for threshold in [0, .05, .10, .15, .20, .25, .30,
                       .35, .40, .45, .50, .60, .70, .80]:
-                selected = [
+        selected = [
             x for x in training
             if abs(x[strategy]) >= threshold and x["direction"] != 0
         ]
