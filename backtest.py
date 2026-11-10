@@ -129,8 +129,8 @@ def features(candles, i):
         sum((x - mean_change) ** 2 for x in changes) / len(changes)
     )
 
-    ema_difference = (e9 / e21 - 1) * 100
-    long_trend = (price / e50 - 1) * 100
+    ema_difference = ((e9 - e21) / price) * 100
+long_trend = ((e21 - e50) / price) * 100
 
     score = (
         0.15 * tanh(mom5 / 0.10)
