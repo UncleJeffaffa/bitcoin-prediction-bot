@@ -212,10 +212,9 @@ def choose_threshold(training, strategy):
 
     for threshold in [0, .05, .10, .15, .20, .25, .30,
                       .35, .40, .45, .50, .60, .70, .80]:
-        selected = [
-    x for x in training
-    if abs(x[strategy]) >= threshold and x["direction"] != 0
-]
+                selected = [
+            x for x in training
+            if abs(x[strategy]) >= threshold and x["direction"] != 0
         ]
         if len(selected) < 30:
             continue
