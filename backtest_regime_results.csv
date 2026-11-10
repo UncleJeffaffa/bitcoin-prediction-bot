@@ -1,0 +1,7 @@
+strategy,regime_type,regime,predictions,wins,losses,accuracy_percent,confidence_interval_low,confidence_interval_high,training_threshold
+mean_reversion,volatility_regime,high,333,183,150,54.95,49.58,60.21,0.8
+mean_reversion,volatility_regime,low,112,61,51,54.46,45.25,63.39,0.8
+mean_reversion,volatility_regime,medium,193,97,96,50.26,43.27,57.24,0.8
+mean_reversion,trend_regime,downtrend,244,139,105,56.97,50.69,63.02,0.8
+mean_reversion,trend_regime,sideways,126,57,69,45.24,36.82,53.94,0.8
+mean_reversion,trend_regime,uptrend,268,145,123,54.1,48.12,59.97,0.8

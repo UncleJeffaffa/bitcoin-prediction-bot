@@ -1,9 +1,9 @@
 {
   "product": "BTC-USD",
-  "requested_historical_days": 30,
-  "actual_historical_days": 30.0,
-  "training_days": 7,
-  "testing_days": 23.0,
+  "requested_historical_days": 75,
+  "actual_historical_days": 75.0,
+  "training_days": 15,
+  "independent_test_days": 30,
   "horizon_minutes": 15,
   "signal_schedule_utc": [
     ":07",
@@ -11,114 +11,234 @@
     ":37",
     ":52"
   ],
-  "entry_method": "Open of the one-minute candle at scheduled signal time",
-  "exit_method": "Open of the candle exactly 15 minutes after entry",
-  "actual_candles": 43198,
-  "synthetic_candles": 2,
-  "synthetic_policy": "Only small gaps are filled using previous close and zero volume. Signals using synthetic feature, entry, or exit candles are excluded.",
-  "training_signals": 661,
-  "testing_signals": 2197,
-  "thresholds": {
+  "entry": "Scheduled one-minute candle open",
+  "exit": "One-minute candle open exactly 15 minutes later",
+  "actual_candles": 107996,
+  "synthetic_candles": 3,
+  "training_signals": 1430,
+  "independent_test_signals": 2870,
+  "recent_excluded_signals": 2869,
+  "thresholds_selected_on_training_only": {
     "current": 0.0,
     "contrarian": 0.0,
-    "trend": 0.2,
-    "momentum": 0.7,
-    "mean_reversion": 0.6,
+    "mean_reversion": 0.8,
+    "trend": 0.0,
+    "momentum": 0.1,
     "breakout": 0.0,
     "volume_breakout": 0.05,
-    "combined": 0.5
+    "combined": 0.05
+  },
+  "market_regime_boundaries_from_training": {
+    "low_volatility_boundary": 0.029939959953894854,
+    "high_volatility_boundary": 0.04322000788528084,
+    "trend_strength_boundary": 0.03495627177920726
   },
   "results": [
     {
       "strategy": "current",
-      "predictions": 2197,
-      "wins": 1045,
-      "losses": 1152,
-      "accuracy_percent": 47.56,
-      "confidence_interval_low": 45.48,
-      "confidence_interval_high": 49.66,
+      "predictions": 2867,
+      "wins": 1362,
+      "losses": 1505,
+      "accuracy_percent": 47.51,
+      "confidence_interval_low": 45.68,
+      "confidence_interval_high": 49.34,
       "training_threshold": 0.0
     },
     {
       "strategy": "contrarian",
-      "predictions": 2197,
-      "wins": 1152,
-      "losses": 1045,
-      "accuracy_percent": 52.44,
-      "confidence_interval_low": 50.34,
-      "confidence_interval_high": 54.52,
+      "predictions": 2867,
+      "wins": 1505,
+      "losses": 1362,
+      "accuracy_percent": 52.49,
+      "confidence_interval_low": 50.66,
+      "confidence_interval_high": 54.32,
       "training_threshold": 0.0
     },
     {
+      "strategy": "mean_reversion",
+      "predictions": 638,
+      "wins": 341,
+      "losses": 297,
+      "accuracy_percent": 53.45,
+      "confidence_interval_low": 49.57,
+      "confidence_interval_high": 57.29,
+      "training_threshold": 0.8
+    },
+    {
       "strategy": "trend",
-      "predictions": 1023,
-      "wins": 468,
-      "losses": 555,
-      "accuracy_percent": 45.75,
-      "confidence_interval_low": 42.72,
-      "confidence_interval_high": 48.81,
-      "training_threshold": 0.2
+      "predictions": 2867,
+      "wins": 1345,
+      "losses": 1522,
+      "accuracy_percent": 46.91,
+      "confidence_interval_low": 45.09,
+      "confidence_interval_high": 48.74,
+      "training_threshold": 0.0
     },
     {
       "strategy": "momentum",
-      "predictions": 330,
-      "wins": 142,
-      "losses": 188,
-      "accuracy_percent": 43.03,
-      "confidence_interval_low": 37.8,
-      "confidence_interval_high": 48.42,
-      "training_threshold": 0.7
-    },
-    {
-      "strategy": "mean_reversion",
-      "predictions": 1175,
-      "wins": 638,
-      "losses": 537,
-      "accuracy_percent": 54.3,
-      "confidence_interval_low": 51.44,
-      "confidence_interval_high": 57.13,
-      "training_threshold": 0.6
+      "predictions": 2341,
+      "wins": 1094,
+      "losses": 1247,
+      "accuracy_percent": 46.73,
+      "confidence_interval_low": 44.72,
+      "confidence_interval_high": 48.76,
+      "training_threshold": 0.1
     },
     {
       "strategy": "breakout",
-      "predictions": 218,
-      "wins": 98,
-      "losses": 120,
-      "accuracy_percent": 44.95,
-      "confidence_interval_low": 38.49,
-      "confidence_interval_high": 51.59,
+      "predictions": 305,
+      "wins": 144,
+      "losses": 161,
+      "accuracy_percent": 47.21,
+      "confidence_interval_low": 41.68,
+      "confidence_interval_high": 52.82,
       "training_threshold": 0.0
     },
     {
       "strategy": "volume_breakout",
-      "predictions": 211,
-      "wins": 97,
-      "losses": 114,
-      "accuracy_percent": 45.97,
-      "confidence_interval_low": 39.38,
-      "confidence_interval_high": 52.71,
+      "predictions": 293,
+      "wins": 146,
+      "losses": 147,
+      "accuracy_percent": 49.83,
+      "confidence_interval_low": 44.14,
+      "confidence_interval_high": 55.52,
       "training_threshold": 0.05
     },
     {
       "strategy": "combined",
-      "predictions": 239,
-      "wins": 107,
-      "losses": 132,
-      "accuracy_percent": 44.77,
-      "confidence_interval_low": 38.6,
-      "confidence_interval_high": 51.11,
-      "training_threshold": 0.5
+      "predictions": 2571,
+      "wins": 1225,
+      "losses": 1346,
+      "accuracy_percent": 47.65,
+      "confidence_interval_low": 45.72,
+      "confidence_interval_high": 49.58,
+      "training_threshold": 0.05
     }
   ],
-  "highest_test_accuracy_candidate": {
+  "mean_reversion_regime_results": [
+    {
+      "strategy": "mean_reversion",
+      "predictions": 333,
+      "wins": 183,
+      "losses": 150,
+      "accuracy_percent": 54.95,
+      "confidence_interval_low": 49.58,
+      "confidence_interval_high": 60.21,
+      "training_threshold": 0.8,
+      "regime_type": "volatility_regime",
+      "regime": "high"
+    },
+    {
+      "strategy": "mean_reversion",
+      "predictions": 112,
+      "wins": 61,
+      "losses": 51,
+      "accuracy_percent": 54.46,
+      "confidence_interval_low": 45.25,
+      "confidence_interval_high": 63.39,
+      "training_threshold": 0.8,
+      "regime_type": "volatility_regime",
+      "regime": "low"
+    },
+    {
+      "strategy": "mean_reversion",
+      "predictions": 193,
+      "wins": 97,
+      "losses": 96,
+      "accuracy_percent": 50.26,
+      "confidence_interval_low": 43.27,
+      "confidence_interval_high": 57.24,
+      "training_threshold": 0.8,
+      "regime_type": "volatility_regime",
+      "regime": "medium"
+    },
+    {
+      "strategy": "mean_reversion",
+      "predictions": 244,
+      "wins": 139,
+      "losses": 105,
+      "accuracy_percent": 56.97,
+      "confidence_interval_low": 50.69,
+      "confidence_interval_high": 63.02,
+      "training_threshold": 0.8,
+      "regime_type": "trend_regime",
+      "regime": "downtrend"
+    },
+    {
+      "strategy": "mean_reversion",
+      "predictions": 126,
+      "wins": 57,
+      "losses": 69,
+      "accuracy_percent": 45.24,
+      "confidence_interval_low": 36.82,
+      "confidence_interval_high": 53.94,
+      "training_threshold": 0.8,
+      "regime_type": "trend_regime",
+      "regime": "sideways"
+    },
+    {
+      "strategy": "mean_reversion",
+      "predictions": 268,
+      "wins": 145,
+      "losses": 123,
+      "accuracy_percent": 54.1,
+      "confidence_interval_low": 48.12,
+      "confidence_interval_high": 59.97,
+      "training_threshold": 0.8,
+      "regime_type": "trend_regime",
+      "regime": "uptrend"
+    }
+  ],
+  "mean_reversion_hypothetical_cost_results": [
+    {
+      "strategy": "mean_reversion",
+      "predictions": 638,
+      "assumed_round_trip_cost_bps": 0,
+      "average_gross_directional_return_percent": 0.00231,
+      "average_net_directional_return_percent": 0.00231,
+      "positive_net_trade_percent": 53.45
+    },
+    {
+      "strategy": "mean_reversion",
+      "predictions": 638,
+      "assumed_round_trip_cost_bps": 5,
+      "average_gross_directional_return_percent": 0.00231,
+      "average_net_directional_return_percent": -0.04769,
+      "positive_net_trade_percent": 40.75
+    },
+    {
+      "strategy": "mean_reversion",
+      "predictions": 638,
+      "assumed_round_trip_cost_bps": 10,
+      "average_gross_directional_return_percent": 0.00231,
+      "average_net_directional_return_percent": -0.09769,
+      "positive_net_trade_percent": 26.33
+    },
+    {
+      "strategy": "mean_reversion",
+      "predictions": 638,
+      "assumed_round_trip_cost_bps": 25,
+      "average_gross_directional_return_percent": 0.00231,
+      "average_net_directional_return_percent": -0.24769,
+      "positive_net_trade_percent": 8.62
+    }
+  ],
+  "highest_accuracy_candidate": {
     "strategy": "mean_reversion",
-    "predictions": 1175,
-    "wins": 638,
-    "losses": 537,
-    "accuracy_percent": 54.3,
-    "confidence_interval_low": 51.44,
-    "confidence_interval_high": 57.13,
-    "training_threshold": 0.6
+    "predictions": 638,
+    "wins": 341,
+    "losses": 297,
+    "accuracy_percent": 53.45,
+    "confidence_interval_low": 49.57,
+    "confidence_interval_high": 57.29,
+    "training_threshold": 0.8
   },
-  "warning": "The test period is separate from the training period. However, choosing a strategy after inspecting test results can still lead to overfitting across repeated experiments. Confirm a candidate on a new later holdout period before using it for live trading. Accuracy does not guarantee profit."
+  "important_limitations": [
+    "The independent holdout is older than the recent period used in the previous backtest.",
+    "The most recent 30 days are excluded from this test.",
+    "Hypothetical BTC directional costs are not Polymarket fees.",
+    "Directional BTC return is not the same as Polymarket contract profit.",
+    "Accuracy does not guarantee profitability.",
+    "A further untouched future test is needed before live deployment."
+  ]
 }

@@ -1,0 +1,5 @@
+strategy,predictions,assumed_round_trip_cost_bps,average_gross_directional_return_percent,average_net_directional_return_percent,positive_net_trade_percent
+mean_reversion,638,0,0.00231,0.00231,53.45
+mean_reversion,638,5,0.00231,-0.04769,40.75
+mean_reversion,638,10,0.00231,-0.09769,26.33
+mean_reversion,638,25,0.00231,-0.24769,8.62
