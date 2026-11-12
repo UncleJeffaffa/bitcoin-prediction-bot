@@ -51,6 +51,7 @@ def get_market_data():
     for row in rows:
         if len(row) < 6:
             continue
+
         candles.append({
             "time": int(row[0]),
             "low": float(row[1]),
@@ -109,9 +110,6 @@ def calculate_features(candles):
 
     window = candles[-150:]
     closes = [c["close"] for c in window]
-    highs = [c["high"] for c in window]
-    lows = [c["low"] for c in window]
-    volumes = [c["volume"] for c in window]
 
     price = closes[-1]
     if price <= 0:
@@ -137,8 +135,10 @@ def calculate_features(candles):
     returns = []
     for i in range(len(closes) - 30, len(closes)):
         previous = closes[i - 1]
+
         if previous <= 0:
             raise RuntimeError("Invalid price in volatility calculation.")
+
         returns.append((closes[i] / previous - 1.0) * 100.0)
 
     volatility = statistics.pstdev(returns)
@@ -157,6 +157,7 @@ def calculate_features(candles):
     )
 
     adjusted = current_score / (1.0 + volatility * 5.0)
+
     up_probability = round(
         50.0 + 30.0 * math.tanh(adjusted * 2.0), 1
     )
@@ -224,7 +225,6 @@ def evaluate_predictions(records, candles, now):
             outcome_price = candle["open"]
 
         else:
-            # Preserve the old close-based evaluation for older records.
             eligible = [
                 c for c in candles
                 if c["time"] >= target
@@ -285,6 +285,7 @@ def get_scheduled_signal(now):
     current_minute = now.replace(second=0, microsecond=0)
 
     candidates = []
+
     for hour_offset in (0, -1):
         hour = current_minute.replace(
             minute=0
@@ -292,6 +293,7 @@ def get_scheduled_signal(now):
 
         for minute in SIGNAL_MINUTES:
             candidate = hour + timedelta(minutes=minute)
+
             if candidate <= current_minute:
                 candidates.append(candidate)
 
@@ -301,8 +303,10 @@ def get_scheduled_signal(now):
     signal_time = max(candidates)
     delay = (current_minute - signal_time).total_seconds()
 
-    # Allow a few minutes for GitHub Actions to start late.
-    if delay > 5 * 60:
+    # Allow GitHub Actions to start late.
+    # The most recent scheduled signal is still used,
+    # never the current Bitcoin price as a replacement.
+    if delay >= 15 * 60:
         return None
 
     return signal_time
@@ -325,6 +329,7 @@ def main():
     current_evaluated = evaluate_predictions(
         current_records, candles, now
     )
+
     paper_evaluated = evaluate_predictions(
         paper_records, candles, now
     )
@@ -335,6 +340,7 @@ def main():
         print("\nNo scheduled signal is due.")
         print("Allowed UTC minutes: 07, 22, 37, 52.")
         print("Existing pending predictions were evaluated.")
+
     else:
         signal_timestamp = int(signal_time.timestamp())
         candle_by_time = {c["time"]: c for c in candles}
@@ -346,6 +352,7 @@ def main():
                 "\nScheduled entry candle is not available yet. "
                 "No prediction was created."
             )
+
         else:
             feature_candles = [
                 c for c in candles
@@ -364,7 +371,9 @@ def main():
                 for i in range(150)
             ]
 
-            actual_times = [c["time"] for c in feature_candles]
+            actual_times = [
+                c["time"] for c in feature_candles
+            ]
 
             if actual_times != expected_times:
                 raise RuntimeError(
@@ -381,7 +390,9 @@ def main():
             indicators = calculate_features(feature_candles)
 
             entry_price = entry_candle["open"]
-            target_time = signal_time + timedelta(minutes=HORIZON_MINUTES)
+            target_time = signal_time + timedelta(
+                minutes=HORIZON_MINUTES
+            )
 
             prediction_id = signal_time.strftime("%Y%m%d%H%M")
 
@@ -389,6 +400,7 @@ def main():
                 r.get("prediction_id") == prediction_id
                 for r in current_records
             )
+
             paper_exists = any(
                 r.get("prediction_id") == prediction_id
                 for r in paper_records
