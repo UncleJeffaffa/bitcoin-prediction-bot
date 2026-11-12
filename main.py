@@ -13,75 +13,85 @@ PRODUCT = "BTC-USD"
 HISTORY_FILE = "predictions.csv"
 PAPER_FILE = "paper_mean_reversion.csv"
 
+SIGNAL_MINUTES = (7, 22, 37, 52)
+HORIZON_MINUTES = 15
+
 CURRENT_FIELDS = [
     "prediction_id", "created_at", "starting_price",
     "prediction", "up_probability", "down_probability",
     "target_at", "outcome_price", "outcome",
-    "correct", "evaluated_at"
+    "correct", "evaluated_at", "price_method"
 ]
 
 PAPER_FIELDS = [
     "prediction_id", "created_at", "starting_price",
     "prediction", "mean_reversion_score", "rsi",
     "momentum_15m", "target_at", "outcome_price",
-    "outcome", "correct", "evaluated_at"
+    "outcome", "correct", "evaluated_at", "price_method"
 ]
 
 
 def get_json(url):
     request = urllib.request.Request(
         url,
-        headers={"User-Agent": "BitcoinPredictionBot/3.0"}
+        headers={"User-Agent": "BitcoinPredictionBot/4.0"}
     )
     with urllib.request.urlopen(request, timeout=30) as response:
         return json.loads(response.read().decode("utf-8"))
 
 
 def get_market_data():
-    candles = get_json(
+    rows = get_json(
         f"{BASE_URL}/products/{PRODUCT}/candles?granularity=60"
     )
 
-    candles = sorted(candles, key=lambda x: x[0])
-    now = datetime.now(timezone.utc).timestamp()
+    rows = sorted(rows, key=lambda row: int(row[0]))
 
-    candles = [
-        c for c in candles
-        if c[0] + 60 <= now
-    ]
+    candles = []
+    for row in rows:
+        if len(row) < 6:
+            continue
+        candles.append({
+            "time": int(row[0]),
+            "low": float(row[1]),
+            "high": float(row[2]),
+            "open": float(row[3]),
+            "close": float(row[4]),
+            "volume": float(row[5])
+        })
 
-    if len(candles) < 150:
-        raise RuntimeError("Not enough completed Bitcoin candles.")
+    if len(candles) < 170:
+        raise RuntimeError(
+            f"Only {len(candles)} candles received from Coinbase."
+        )
 
-    prices = [float(c[4]) for c in candles]
-
-    return candles, prices
-
-
-def calculate_ema(prices, period):
-    if len(prices) < period:
-        raise RuntimeError("Not enough prices for EMA.")
-
-    multiplier = 2 / (period + 1)
-    value = prices[0]
-
-    for price in prices[1:]:
-        value = price * multiplier + value * (1 - multiplier)
-
-    return value
+    return candles
 
 
-def calculate_rsi(prices, period=14):
-    if len(prices) < period + 1:
-        raise RuntimeError("Not enough prices for RSI.")
+def ema(values, period):
+    if len(values) < period:
+        return None
+
+    alpha = 2.0 / (period + 1.0)
+    result = values[0]
+
+    for value in values[1:]:
+        result = alpha * value + (1.0 - alpha) * result
+
+    return result
+
+
+def rsi(values, period=14):
+    if len(values) < period + 1:
+        return None
 
     changes = [
-        prices[i] - prices[i - 1]
-        for i in range(len(prices) - period, len(prices))
+        values[i] - values[i - 1]
+        for i in range(len(values) - period, len(values))
     ]
 
-    gains = [max(change, 0) for change in changes]
-    losses = [abs(min(change, 0)) for change in changes]
+    gains = [max(change, 0.0) for change in changes]
+    losses = [max(-change, 0.0) for change in changes]
 
     average_gain = sum(gains) / period
     average_loss = sum(losses) / period
@@ -90,26 +100,83 @@ def calculate_rsi(prices, period=14):
         return 100.0 if average_gain > 0 else 50.0
 
     rs = average_gain / average_loss
-    return 100 - (100 / (1 + rs))
+    return 100.0 - (100.0 / (1.0 + rs))
 
 
-def momentum(prices, minutes):
-    if len(prices) <= minutes:
-        return 0.0
+def calculate_features(candles):
+    if len(candles) < 150:
+        raise RuntimeError("Not enough completed candles for indicators.")
 
-    old_price = prices[-(minutes + 1)]
-    new_price = prices[-1]
+    window = candles[-150:]
+    closes = [c["close"] for c in window]
+    highs = [c["high"] for c in window]
+    lows = [c["low"] for c in window]
+    volumes = [c["volume"] for c in window]
 
-    return ((new_price / old_price) - 1) * 100
+    price = closes[-1]
+    if price <= 0:
+        raise RuntimeError("Invalid Bitcoin price.")
 
+    def momentum(minutes):
+        old = closes[-1 - minutes]
+        return ((price / old) - 1.0) * 100.0 if old > 0 else 0.0
 
-def calculate_volatility(prices, period=30):
-    changes = [
-        (prices[i] / prices[i - 1] - 1) * 100
-        for i in range(len(prices) - period, len(prices))
-    ]
+    mom5 = momentum(5)
+    mom15 = momentum(15)
+    mom30 = momentum(30)
+    mom60 = momentum(60)
 
-    return statistics.pstdev(changes)
+    ema9 = ema(closes[-100:], 9)
+    ema21 = ema(closes[-100:], 21)
+    ema50 = ema(closes[-150:], 50)
+    current_rsi = rsi(closes, 14)
+
+    if any(x is None for x in (ema9, ema21, ema50, current_rsi)):
+        raise RuntimeError("Unable to calculate technical indicators.")
+
+    returns = []
+    for i in range(len(closes) - 30, len(closes)):
+        previous = closes[i - 1]
+        if previous <= 0:
+            raise RuntimeError("Invalid price in volatility calculation.")
+        returns.append((closes[i] / previous - 1.0) * 100.0)
+
+    volatility = statistics.pstdev(returns)
+
+    ema_difference = ((ema9 - ema21) / price) * 100.0
+    long_trend = ((ema21 - ema50) / price) * 100.0
+
+    current_score = (
+        0.15 * math.tanh(mom5 / 0.10)
+        + 0.20 * math.tanh(mom15 / 0.20)
+        + 0.15 * math.tanh(mom30 / 0.30)
+        + 0.10 * math.tanh(mom60 / 0.40)
+        + 0.20 * math.tanh(ema_difference / 0.12)
+        + 0.10 * math.tanh(long_trend / 0.20)
+        + 0.10 * math.tanh((current_rsi - 50.0) / 12.0)
+    )
+
+    adjusted = current_score / (1.0 + volatility * 5.0)
+    up_probability = round(
+        50.0 + 30.0 * math.tanh(adjusted * 2.0), 1
+    )
+
+    mean_reversion_score = (
+        -0.60 * math.tanh((current_rsi - 50.0) / 12.0)
+        -0.40 * math.tanh(mom15 / 0.20)
+    )
+
+    return {
+        "current_prediction": "UP" if up_probability >= 50.0 else "DOWN",
+        "up_probability": up_probability,
+        "down_probability": round(100.0 - up_probability, 1),
+        "mean_reversion_prediction": (
+            "UP" if mean_reversion_score > 0 else "DOWN"
+        ),
+        "mean_reversion_score": round(mean_reversion_score, 6),
+        "rsi": round(current_rsi, 2),
+        "momentum_15m": round(mom15, 5)
+    }
 
 
 def load_history(filename):
@@ -122,14 +189,20 @@ def load_history(filename):
 
 def save_history(filename, records, fields):
     with open(filename, "w", newline="", encoding="utf-8") as file:
-        writer = csv.DictWriter(file, fieldnames=fields)
+        writer = csv.DictWriter(
+            file,
+            fieldnames=fields,
+            extrasaction="ignore"
+        )
         writer.writeheader()
         writer.writerows(records)
 
 
 def evaluate_predictions(records, candles, now):
     evaluated = 0
-    current_time = now.timestamp()
+    now_timestamp = now.timestamp()
+
+    candle_by_time = {c["time"]: c for c in candles}
 
     for record in records:
         if record.get("outcome"):
@@ -139,17 +212,31 @@ def evaluate_predictions(records, candles, now):
             record["target_at"]
         ).timestamp()
 
-        eligible = [
-            candle for candle in candles
-            if candle[0] >= target
-            and candle[0] + 60 <= current_time
-        ]
+        method = record.get("price_method", "")
 
-        if not eligible:
-            continue
+        if method == "scheduled_open":
+            target_minute = int(target // 60)
+            candle = candle_by_time.get(target_minute * 60)
 
-        candle = min(eligible, key=lambda item: item[0])
-        outcome_price = float(candle[4])
+            if candle is None or candle["time"] + 60 > now_timestamp:
+                continue
+
+            outcome_price = candle["open"]
+
+        else:
+            # Preserve the old close-based evaluation for older records.
+            eligible = [
+                c for c in candles
+                if c["time"] >= target
+                and c["time"] + 60 <= now_timestamp
+            ]
+
+            if not eligible:
+                continue
+
+            candle = min(eligible, key=lambda item: item["time"])
+            outcome_price = candle["close"]
+
         starting_price = float(record["starting_price"])
 
         if outcome_price > starting_price:
@@ -176,15 +263,11 @@ def evaluate_predictions(records, candles, now):
 
 def show_accuracy(records, title):
     completed = [
-        record for record in records
-        if record.get("correct") in ("True", "False")
+        r for r in records
+        if r.get("correct") in ("True", "False")
     ]
 
-    wins = sum(
-        record["correct"] == "True"
-        for record in completed
-    )
-
+    wins = sum(r["correct"] == "True" for r in completed)
     total = len(completed)
 
     print(f"\n{title}")
@@ -193,86 +276,48 @@ def show_accuracy(records, title):
     print(f"Incorrect: {total - wins}")
 
     if total:
-        print(f"Accuracy: {wins / total * 100:.2f}%")
+        print(f"Accuracy: {wins / total * 100.0:.2f}%")
     else:
         print("Accuracy: Waiting for results")
 
 
-def make_current_prediction(price, prices):
-    rsi_value = calculate_rsi(prices)
+def get_scheduled_signal(now):
+    current_minute = now.replace(second=0, microsecond=0)
 
-    mom5 = momentum(prices, 5)
-    mom15 = momentum(prices, 15)
-    mom30 = momentum(prices, 30)
-    mom60 = momentum(prices, 60)
+    candidates = []
+    for hour_offset in (0, -1):
+        hour = current_minute.replace(
+            minute=0
+        ) + timedelta(hours=hour_offset)
 
-    ema9 = calculate_ema(prices[-100:], 9)
-    ema21 = calculate_ema(prices[-100:], 21)
-    ema50 = calculate_ema(prices[-150:], 50)
+        for minute in SIGNAL_MINUTES:
+            candidate = hour + timedelta(minutes=minute)
+            if candidate <= current_minute:
+                candidates.append(candidate)
 
-    volatility = calculate_volatility(prices)
+    if not candidates:
+        return None
 
-    ema_difference = ((ema9 - ema21) / price) * 100
-    long_trend = ((ema21 - ema50) / price) * 100
+    signal_time = max(candidates)
+    delay = (current_minute - signal_time).total_seconds()
 
-    score = (
-        0.15 * math.tanh(mom5 / 0.10)
-        + 0.20 * math.tanh(mom15 / 0.20)
-        + 0.15 * math.tanh(mom30 / 0.30)
-        + 0.10 * math.tanh(mom60 / 0.40)
-        + 0.20 * math.tanh(ema_difference / 0.12)
-        + 0.10 * math.tanh(long_trend / 0.20)
-        + 0.10 * math.tanh((rsi_value - 50) / 12)
-    )
+    # Allow a few minutes for GitHub Actions to start late.
+    if delay > 5 * 60:
+        return None
 
-    adjusted_score = score / (1 + volatility * 5)
-
-    up_probability = round(
-        50 + 30 * math.tanh(adjusted_score * 2),
-        1
-    )
-
-    return {
-        "prediction": "UP" if up_probability >= 50 else "DOWN",
-        "up_probability": up_probability,
-        "down_probability": round(100 - up_probability, 1)
-    }
-
-
-def make_mean_reversion_prediction(prices):
-    rsi_value = calculate_rsi(prices)
-    mom15 = momentum(prices, 15)
-
-    # Same mean-reversion scoring formula used in the backtest.
-    score = (
-        -0.60 * math.tanh((rsi_value - 50) / 12)
-        -0.40 * math.tanh(mom15 / 0.20)
-    )
-
-    prediction = "UP" if score > 0 else "DOWN"
-
-    return {
-        "prediction": prediction,
-        "score": round(score, 6),
-        "rsi": round(rsi_value, 2),
-        "momentum_15m": round(mom15, 5)
-    }
+    return signal_time
 
 
 def main():
-    now = datetime.now(timezone.utc).replace(second=0, microsecond=0)
+    now = datetime.now(timezone.utc)
 
-    print("=" * 55)
+    print("=" * 60)
     print("BITCOIN 15-MINUTE PREDICTION BOT")
-    print("CURRENT STRATEGY + MEAN-REVERSION PAPER TEST")
-    print("=" * 55)
+    print("SCHEDULED OPEN-TO-OPEN VERSION")
+    print("=" * 60)
+    print(f"\nUTC run time: {now.isoformat()}")
 
-    print(f"\nUTC time: {now.isoformat()}")
-
-    candles, prices = get_market_data()
-
-    # Use the most recently completed candle close as the entry price.
-    price = float(candles[-1][4])
+    candles = get_market_data()
 
     current_records = load_history(HISTORY_FILE)
     paper_records = load_history(PAPER_FILE)
@@ -280,84 +325,125 @@ def main():
     current_evaluated = evaluate_predictions(
         current_records, candles, now
     )
-
     paper_evaluated = evaluate_predictions(
         paper_records, candles, now
     )
 
-    # Keep the target aligned to the scheduled 15-minute signal.
-    target_time = now + timedelta(minutes=15)
+    signal_time = get_scheduled_signal(now)
 
-    prediction_id = now.strftime("%Y%m%d%H%M")
+    if signal_time is None:
+        print("\nNo scheduled signal is due.")
+        print("Allowed UTC minutes: 07, 22, 37, 52.")
+        print("Existing pending predictions were evaluated.")
+    else:
+        signal_timestamp = int(signal_time.timestamp())
+        candle_by_time = {c["time"]: c for c in candles}
 
-    # Avoid duplicate entries if the workflow is manually rerun
-    # during the same UTC minute.
-    current_exists = any(
-        record["prediction_id"] == prediction_id
-        for record in current_records
-    )
+        entry_candle = candle_by_time.get(signal_timestamp)
 
-    paper_exists = any(
-        record["prediction_id"] == prediction_id
-        for record in paper_records
-    )
+        if entry_candle is None:
+            print(
+                "\nScheduled entry candle is not available yet. "
+                "No prediction was created."
+            )
+        else:
+            feature_candles = [
+                c for c in candles
+                if c["time"] + 60 <= signal_timestamp
+            ]
 
-    current = make_current_prediction(price, prices)
-    mean_reversion = make_mean_reversion_prediction(prices)
+            if len(feature_candles) < 150:
+                raise RuntimeError(
+                    "Not enough completed candles before entry time."
+                )
 
-    if not current_exists:
-        current_records.append({
-            "prediction_id": prediction_id,
-            "created_at": now.isoformat(),
-            "starting_price": round(price, 2),
-            "prediction": current["prediction"],
-            "up_probability": current["up_probability"],
-            "down_probability": current["down_probability"],
-            "target_at": target_time.isoformat(),
-            "outcome_price": "",
-            "outcome": "",
-            "correct": "",
-            "evaluated_at": ""
-        })
+            feature_candles = feature_candles[-150:]
 
-    if not paper_exists:
-        paper_records.append({
-            "prediction_id": prediction_id,
-            "created_at": now.isoformat(),
-            "starting_price": round(price, 2),
-            "prediction": mean_reversion["prediction"],
-            "mean_reversion_score": mean_reversion["score"],
-            "rsi": mean_reversion["rsi"],
-            "momentum_15m": mean_reversion["momentum_15m"],
-            "target_at": target_time.isoformat(),
-            "outcome_price": "",
-            "outcome": "",
-            "correct": "",
-            "evaluated_at": ""
-        })
+            expected_times = [
+                feature_candles[0]["time"] + i * 60
+                for i in range(150)
+            ]
 
-    save_history(
-        HISTORY_FILE, current_records, CURRENT_FIELDS
-    )
+            actual_times = [c["time"] for c in feature_candles]
 
-    save_history(
-        PAPER_FILE, paper_records, PAPER_FIELDS
-    )
+            if actual_times != expected_times:
+                raise RuntimeError(
+                    "Missing one-minute candles in indicator window. "
+                    "Prediction skipped to avoid unreliable data."
+                )
 
-    print(f"\nBITCOIN PRICE: ${price:,.2f}")
+            if feature_candles[-1]["time"] + 60 != signal_timestamp:
+                raise RuntimeError(
+                    "Indicator window does not end immediately "
+                    "before the scheduled entry."
+                )
 
-    print("\nCURRENT BOT PREDICTION:")
-    print(current["prediction"])
-    print(f"UP score: {current['up_probability']}%")
-    print(f"DOWN score: {current['down_probability']}%")
+            indicators = calculate_features(feature_candles)
 
-    print("\nMEAN-REVERSION PAPER PREDICTION:")
-    print(mean_reversion["prediction"])
-    print(f"Mean-reversion score: {mean_reversion['score']}")
-    print(f"RSI: {mean_reversion['rsi']}")
-    print(f"15-minute momentum: {mean_reversion['momentum_15m']}")
+            entry_price = entry_candle["open"]
+            target_time = signal_time + timedelta(minutes=HORIZON_MINUTES)
 
-    print(f"\nTarget time: {target_time.isoformat()}")
+            prediction_id = signal_time.strftime("%Y%m%d%H%M")
+
+            current_exists = any(
+                r.get("prediction_id") == prediction_id
+                for r in current_records
+            )
+            paper_exists = any(
+                r.get("prediction_id") == prediction_id
+                for r in paper_records
+            )
+
+            if not current_exists:
+                current_records.append({
+                    "prediction_id": prediction_id,
+                    "created_at": signal_time.isoformat(),
+                    "starting_price": round(entry_price, 2),
+                    "prediction": indicators["current_prediction"],
+                    "up_probability": indicators["up_probability"],
+                    "down_probability": indicators["down_probability"],
+                    "target_at": target_time.isoformat(),
+                    "outcome_price": "",
+                    "outcome": "",
+                    "correct": "",
+                    "evaluated_at": "",
+                    "price_method": "scheduled_open"
+                })
+
+            if not paper_exists:
+                paper_records.append({
+                    "prediction_id": prediction_id,
+                    "created_at": signal_time.isoformat(),
+                    "starting_price": round(entry_price, 2),
+                    "prediction": indicators["mean_reversion_prediction"],
+                    "mean_reversion_score": indicators["mean_reversion_score"],
+                    "rsi": indicators["rsi"],
+                    "momentum_15m": indicators["momentum_15m"],
+                    "target_at": target_time.isoformat(),
+                    "outcome_price": "",
+                    "outcome": "",
+                    "correct": "",
+                    "evaluated_at": "",
+                    "price_method": "scheduled_open"
+                })
+
+            print(f"\nSIGNAL TIME: {signal_time.isoformat()}")
+            print(f"ENTRY PRICE: ${entry_price:,.2f}")
+            print(f"TARGET TIME: {target_time.isoformat()}")
+
+            print("\nCURRENT BOT PREDICTION:")
+            print(indicators["current_prediction"])
+            print(f"UP probability: {indicators['up_probability']}%")
+            print(f"DOWN probability: {indicators['down_probability']}%")
+
+            print("\nMEAN-REVERSION PAPER PREDICTION:")
+            print(indicators["mean_reversion_prediction"])
+            print(f"Score: {indicators['mean_reversion_score']}")
+            print(f"RSI: {indicators['rsi']}")
+            print(f"15-minute momentum: {indicators['momentum_15m']}")
+
+    save_history(HISTORY_FILE, current_records, CURRENT_FIELDS)
+    save_history(PAPER_FILE, paper_records, PAPER_FIELDS)
 
     print(f"\nCurrent predictions evaluated: {current_evaluated}")
     print(f"Paper predictions evaluated: {paper_evaluated}")
@@ -365,13 +451,13 @@ def main():
     show_accuracy(current_records, "CURRENT BOT RESULTS")
     show_accuracy(paper_records, "MEAN-REVERSION PAPER RESULTS")
 
-    print("\nBoth prediction files saved.")
-    print("PREDICTION RUN COMPLETE")
+    print("\nPrediction files saved.")
+    print("RUN COMPLETE")
 
 
 if __name__ == "__main__":
     try:
         main()
     except Exception as error:
-        print(f"BOT ERROR: {error}")
+        print(f"\nBOT ERROR: {error}")
         raise
