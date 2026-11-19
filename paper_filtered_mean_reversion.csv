@@ -1,1 +1,2 @@
 prediction_id,created_at,starting_price,prediction,mean_reversion_score,rsi,momentum_15m,target_at,outcome_price,outcome,correct,evaluated_at,price_method
+202611191737,2026-11-19T17:37:00+00:00,63127.31,DOWN,-0.980405,74.61,0.92187,2026-11-19T17:52:00+00:00,,,,,scheduled_open
