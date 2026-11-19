@@ -1,0 +1,1 @@
+prediction_id,created_at,starting_price,prediction,mean_reversion_score,rsi,momentum_15m,target_at,outcome_price,outcome,correct,evaluated_at,price_method
