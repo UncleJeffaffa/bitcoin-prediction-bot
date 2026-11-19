@@ -1,4 +1,5 @@
 
+
 import csv
 import json
 import math
@@ -12,6 +13,7 @@ PRODUCT = "BTC-USD"
 
 HISTORY_FILE = "predictions.csv"
 PAPER_FILE = "paper_mean_reversion.csv"
+FILTERED_FILE = "paper_filtered_mean_reversion.csv"
 
 SIGNAL_MINUTES = (7, 22, 37, 52)
 HORIZON_MINUTES = 15
@@ -29,6 +31,8 @@ PAPER_FIELDS = [
     "momentum_15m", "target_at", "outcome_price",
     "outcome", "correct", "evaluated_at", "price_method"
 ]
+
+FILTERED_FIELDS = PAPER_FIELDS.copy()
 
 
 def get_json(url):
@@ -303,9 +307,6 @@ def get_scheduled_signal(now):
     signal_time = max(candidates)
     delay = (current_minute - signal_time).total_seconds()
 
-    # Allow GitHub Actions to start late.
-    # The most recent scheduled signal is still used,
-    # never the current Bitcoin price as a replacement.
     if delay >= 15 * 60:
         return None
 
@@ -317,7 +318,7 @@ def main():
 
     print("=" * 60)
     print("BITCOIN 15-MINUTE PREDICTION BOT")
-    print("SCHEDULED OPEN-TO-OPEN VERSION")
+    print("THREE-STRATEGY PAPER TEST")
     print("=" * 60)
     print(f"\nUTC run time: {now.isoformat()}")
 
@@ -325,6 +326,7 @@ def main():
 
     current_records = load_history(HISTORY_FILE)
     paper_records = load_history(PAPER_FILE)
+    filtered_records = load_history(FILTERED_FILE)
 
     current_evaluated = evaluate_predictions(
         current_records, candles, now
@@ -332,6 +334,10 @@ def main():
 
     paper_evaluated = evaluate_predictions(
         paper_records, candles, now
+    )
+
+    filtered_evaluated = evaluate_predictions(
+        filtered_records, candles, now
     )
 
     signal_time = get_scheduled_signal(now)
@@ -406,6 +412,11 @@ def main():
                 for r in paper_records
             )
 
+            filtered_exists = any(
+                r.get("prediction_id") == prediction_id
+                for r in filtered_records
+            )
+
             if not current_exists:
                 current_records.append({
                     "prediction_id": prediction_id,
@@ -439,6 +450,40 @@ def main():
                     "price_method": "scheduled_open"
                 })
 
+            # THIRD STRATEGY:
+            # Only record DOWN mean-reversion signals when RSI >= 60.
+            qualifies_for_filtered = (
+                indicators["mean_reversion_prediction"] == "DOWN"
+                and indicators["rsi"] >= 60.0
+            )
+
+            if qualifies_for_filtered and not filtered_exists:
+                filtered_records.append({
+                    "prediction_id": prediction_id,
+                    "created_at": signal_time.isoformat(),
+                    "starting_price": round(entry_price, 2),
+                    "prediction": "DOWN",
+                    "mean_reversion_score": indicators["mean_reversion_score"],
+                    "rsi": indicators["rsi"],
+                    "momentum_15m": indicators["momentum_15m"],
+                    "target_at": target_time.isoformat(),
+                    "outcome_price": "",
+                    "outcome": "",
+                    "correct": "",
+                    "evaluated_at": "",
+                    "price_method": "scheduled_open"
+                })
+
+                print("\nTHIRD STRATEGY: FILTERED DOWN SIGNAL")
+                print("QUALIFIED: YES")
+                print("Prediction: DOWN")
+                print(f"RSI: {indicators['rsi']}")
+
+            else:
+                print("\nTHIRD STRATEGY: FILTERED DOWN SIGNAL")
+                print("QUALIFIED: NO")
+                print("No prediction recorded for this interval.")
+
             print(f"\nSIGNAL TIME: {signal_time.isoformat()}")
             print(f"ENTRY PRICE: ${entry_price:,.2f}")
             print(f"TARGET TIME: {target_time.isoformat()}")
@@ -456,14 +501,20 @@ def main():
 
     save_history(HISTORY_FILE, current_records, CURRENT_FIELDS)
     save_history(PAPER_FILE, paper_records, PAPER_FIELDS)
+    save_history(FILTERED_FILE, filtered_records, FILTERED_FIELDS)
 
     print(f"\nCurrent predictions evaluated: {current_evaluated}")
-    print(f"Paper predictions evaluated: {paper_evaluated}")
+    print(f"Mean-reversion predictions evaluated: {paper_evaluated}")
+    print(f"Filtered predictions evaluated: {filtered_evaluated}")
 
     show_accuracy(current_records, "CURRENT BOT RESULTS")
     show_accuracy(paper_records, "MEAN-REVERSION PAPER RESULTS")
+    show_accuracy(
+        filtered_records,
+        "THIRD STRATEGY: FILTERED DOWN RSI 60+ RESULTS"
+    )
 
-    print("\nPrediction files saved.")
+    print("\nAll three prediction files saved.")
     print("RUN COMPLETE")
 
 
@@ -472,4 +523,3 @@ if __name__ == "__main__":
         main()
     except Exception as error:
         print(f"\nBOT ERROR: {error}")
-        raise
